@@ -9,10 +9,12 @@ dist/
 *.egg-info/
 .eggs/
 
-# Virtual environments
+# Virtual environments & secrets
 .venv/
 venv/
 env/
+.env
+*.env
 
 # Local test artifacts & screenshots
 examples/bambu_gui_state.png

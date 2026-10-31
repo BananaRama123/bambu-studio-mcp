@@ -26,12 +26,17 @@ from .gui_control import control_bambu_gui
 from .knowledge import (
     diagnose_print_issue,
     explain_setting,
+    get_calibration_guide as _get_calibration_guide,
     recommend_print_settings,
 )
 from .model_3mf import (
     add_empty_plate_to_3mf,
     inspect_3d_model as _inspect_3d_model,
+    list_plates_in_3mf as _list_plates_in_3mf,
     modify_3mf_settings,
+    move_object_to_plate_in_3mf as _move_object_to_plate_in_3mf,
+    remove_plate_from_3mf as _remove_plate_from_3mf,
+    set_object_settings_in_3mf as _set_object_settings_in_3mf,
 )
 from .printer_live import query_printer_status, send_printer_command
 from .profiles import catalog
@@ -363,11 +368,71 @@ def search_3d_models(
     )
 
 
+def list_plates_in_3mf(input_3mf_path: str) -> Dict[str, Any]:
+    """List all build plates (<plate>) and their assigned objects inside a Bambu Studio .3mf project file."""
+    return _list_plates_in_3mf(input_3mf_path=input_3mf_path)
+
+
+def remove_plate_from_3mf(
+    input_3mf_path: str,
+    plate_id: int,
+    output_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Remove a specific build plate by plate_id from a Bambu Studio .3mf project file and re-number remaining plates."""
+    return _remove_plate_from_3mf(
+        input_3mf_path=input_3mf_path,
+        plate_id=plate_id,
+        output_3mf_path=output_3mf_path,
+    )
+
+
+def move_object_to_plate_in_3mf(
+    input_3mf_path: str,
+    object_identifier: str,
+    target_plate_id: int,
+    output_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Move a 3D object instance (matched by object_id or object_name) to another build plate inside a .3mf file."""
+    return _move_object_to_plate_in_3mf(
+        input_3mf_path=input_3mf_path,
+        object_identifier=object_identifier,
+        target_plate_id=target_plate_id,
+        output_3mf_path=output_3mf_path,
+    )
+
+
+def set_object_settings_in_3mf(
+    input_3mf_path: str,
+    object_identifier: str,
+    settings_overrides: Dict[str, Any],
+    output_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Set per-object slicer overrides (e.g. extruder AMS slot, wall_loops, sparse_infill_density, enable_support) on a specific object in a .3mf file."""
+    return _set_object_settings_in_3mf(
+        input_3mf_path=input_3mf_path,
+        object_identifier=object_identifier,
+        settings_overrides=settings_overrides,
+        output_3mf_path=output_3mf_path,
+    )
+
+
+def get_calibration_guide(
+    calibration_type: str = "all",
+    filament_type: str = "PLA",
+) -> Dict[str, Any]:
+    """Get step-by-step Bambu Studio Calibration tab workflows, formulas, and target ranges (flow_dynamics, flow_rate, max_volumetric_speed, temperature_and_retraction)."""
+    return _get_calibration_guide(
+        calibration_type=calibration_type,
+        filament_type=filament_type,
+    )
+
+
 ALL_TOOLS: List[Callable[..., Any]] = [
     bambu_environment_info,
     explain_bambu_setting,
     smart_slicing_advisor,
     diagnose_print_defect,
+    get_calibration_guide,
     list_bambu_profiles,
     inspect_bambu_profile,
     compare_bambu_profiles,
@@ -375,6 +440,10 @@ ALL_TOOLS: List[Callable[..., Any]] = [
     inspect_3d_model,
     optimize_3mf_project,
     add_plate_to_3mf,
+    list_plates_in_3mf,
+    remove_plate_from_3mf,
+    move_object_to_plate_in_3mf,
+    set_object_settings_in_3mf,
     slice_model_headless,
     parse_sliced_file_metrics,
     open_in_bambu_studio,

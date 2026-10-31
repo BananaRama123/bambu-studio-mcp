@@ -63,17 +63,47 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "when_to_change": "Enable Scarf Joint (Contour) when printing smooth round cylinders or organic models without sharp corners.",
         "tradeoffs": "Slightly increases outer wall print time and requires well-tuned flow/pressure advance.",
     },
+    "seam_slope_type": {
+        "gui_tab": "Quality -> Seam",
+        "gui_label": "Scarf joint seam",
+        "type": "enum",
+        "options": ["none", "contour", "all"],
+        "default_04_nozzle": "none",
+        "summary": "Enables a tapered 'scarf joint' overlap at the start and end of wall loops to hide vertical Z-seams on smooth cylinders and curved surfaces.",
+        "when_to_change": "Set to 'contour' (outer wall only) or 'all' when printing round cylinders, tubes, or smooth organic shapes that lack sharp corners to hide a traditional seam.",
+        "tradeoffs": "Requires well-calibrated Flow Dynamics (K-factor); can leave slight artifacts on sharp corners if scarf_angle_threshold is too low.",
+    },
     "ironing_type": {
         "gui_tab": "Quality -> Ironing",
         "gui_label": "Ironing Type",
         "type": "enum",
         "options": ["no ironing", "top surfaces", "topmost surface", "all solid layers"],
         "default_04_nozzle": "no ironing",
-        "summary": "Passes the hot nozzle over flat top surfaces a second time extruding a tiny amount (10-15%) of filament to melt lines flat like injection molding.",
+        "summary": "Passes the hot nozzle over flat top surfaces a second time extruding a tiny amount (10-15%) of filament to melt lines flat for an injection-molded finish.",
         "when_to_change": "Set to 'top surfaces' (with ironing_flow ~15%, ironing_speed ~30-60mm/s) for signs, badges, coasters, and flat-topped boxes.",
         "tradeoffs": "Adds time to flat top layers; has no benefit on curved/domed tops.",
     },
-    " wall_generator": {
+    "ironing_flow": {
+        "gui_tab": "Quality -> Ironing",
+        "gui_label": "Ironing flow",
+        "type": "percent string (e.g. '15%')",
+        "default_04_nozzle": "10%",
+        "recommended_range": "10% - 22%",
+        "summary": "Percentage of normal flow extruded during the top-surface ironing pass to fill microscopic ridges between top lines.",
+        "when_to_change": "Increase from 10% to 15%-18% for PLA/PETG on modern high-speed Bambu printers (P1S/X1C/A1) where 10% can leave faint under-ironed lines.",
+        "tradeoffs": "Too high (>22%) pushes excess molten plastic to the perimeter edges of the top surface, creating a raised lip.",
+    },
+    "ironing_speed": {
+        "gui_tab": "Quality -> Ironing",
+        "gui_label": "Ironing speed",
+        "type": "float (mm/s)",
+        "default_04_nozzle": "30",
+        "recommended_range": "30 - 65 mm/s",
+        "summary": "Speed of the nozzle during the top-surface ironing pass.",
+        "when_to_change": "Use 30-45 mm/s for small plaques/text or 50-65 mm/s (paired with 15-18% ironing_flow) for large flat lids to achieve a uniform matte/satin finish faster.",
+        "tradeoffs": "Too slow on PLA can heat-creep or scorch light-colored filaments; too fast fails to melt lines together.",
+    },
+    "wall_generator": {
         "gui_tab": "Quality -> Wall generator",
         "gui_label": "Wall generator",
         "type": "enum",
@@ -109,9 +139,19 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "type": "float (mm)",
         "default_04_nozzle": "0",
         "recommended_range": "-0.15 to +0.15 mm",
-        "summary": "Expands (+) or shrinks (-) the outer boundary of the model in X/Y.",
-        "when_to_change": "Set to -0.05mm to -0.10mm when pegs/tabs are too tight to fit into mating slots.",
-        "tradeoffs": "Changes outer dimensions slightly.",
+        "summary": "Expands (+) or shrinks (-) the outer boundary contour in X/Y for outer dimensional scaling tolerance.",
+        "when_to_change": "Set to -0.05mm to -0.10mm when external pegs/tabs/threads are too tight to fit into mating slots, or +0.05mm to compensate for high-shrinkage engineering polymers (ABS/ASA/PA).",
+        "tradeoffs": "Shifts all outer X/Y dimensions by twice the compensation value (radius offset).",
+    },
+    "bridge_flow": {
+        "gui_tab": "Quality -> Advanced",
+        "gui_label": "Bridge flow",
+        "type": "float ratio",
+        "default_04_nozzle": "1",
+        "recommended_range": "0.85 - 1.0",
+        "summary": "Extrusion flow multiplier applied to unsupported horizontal bridges.",
+        "when_to_change": "Lower slightly to 0.90-0.95 (paired with lower bridge_speed) so bridged strands stay under slight tension instead of sagging downward.",
+        "tradeoffs": "Too low (<0.80) causes bridged strands to snap mid-air.",
     },
     "wall_sequence": {
         "gui_tab": "Quality -> Walls and surfaces",
@@ -201,6 +241,75 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "when_to_change": "Drop to 25-30 mm/s when printing small details, text on the first layer, or sticky/tricky filaments like PETG and TPU.",
         "tradeoffs": "Only affects the first layer (adds <1-2 minutes).",
     },
+    "bridge_speed": {
+        "gui_tab": "Speed -> Other layers speed",
+        "gui_label": "Bridge",
+        "type": "float (mm/s)",
+        "default_04_nozzle": "50",
+        "recommended_range": "25 - 50 mm/s",
+        "summary": "Print speed for horizontal mid-air bridges spanning between two pillars.",
+        "when_to_change": "Drop to 25-35 mm/s (paired with 100% part cooling fan and bridge_flow 0.90-0.95) so extruded strands freeze mid-air without sagging or snapping.",
+        "tradeoffs": "Minimal impact on total print time since only bridge regions slow down.",
+    },
+    "overhang_1_4_speed": {
+        "gui_tab": "Speed -> Overhang speed",
+        "gui_label": "Overhang speed (10% - 25% overhang)",
+        "type": "float (mm/s) or percent",
+        "default_04_nozzle": "0",
+        "recommended_range": "60 - 100 mm/s (0 = no slowdown)",
+        "summary": "Speed for mild overhangs where 10%-25% of the extruded line width hangs over air.",
+        "when_to_change": "Usually left at 0 (outer wall speed) or set to 80-100 mm/s for consistent sheen transitions.",
+        "tradeoffs": "Sudden speed drops on mild slopes can create horizontal gloss/matte bands on Silk PLA or PETG.",
+    },
+    "overhang_2_4_speed": {
+        "gui_tab": "Speed -> Overhang speed",
+        "gui_label": "Overhang speed (25% - 50% overhang)",
+        "type": "float (mm/s) or percent",
+        "default_04_nozzle": "50",
+        "recommended_range": "30 - 60 mm/s",
+        "summary": "Speed for moderate overhangs (~45 deg) where 25%-50% of the line width is unsupported.",
+        "when_to_change": "Drop to 35-45 mm/s if 45-degree chamfers or overhangs curl upward at corners.",
+        "tradeoffs": "Slightly slows down sloped perimeters.",
+    },
+    "overhang_3_4_speed": {
+        "gui_tab": "Speed -> Overhang speed",
+        "gui_label": "Overhang speed (50% - 75% overhang)",
+        "type": "float (mm/s) or percent",
+        "default_04_nozzle": "30",
+        "recommended_range": "15 - 35 mm/s",
+        "summary": "Speed for steep overhangs (~60 deg from vertical) where 50%-75% of the line width hangs in air.",
+        "when_to_change": "Drop to 15-25 mm/s to give the part cooling fan maximum time to solidify steep unsupported curves.",
+        "tradeoffs": "Printing too slowly with high nozzle temp can occasionally radiate heat into thin overhangs if fan speed is low.",
+    },
+    "overhang_4_4_speed": {
+        "gui_tab": "Speed -> Overhang speed",
+        "gui_label": "Overhang speed (75% - 100% overhang / bridge perimeter)",
+        "type": "float (mm/s) or percent",
+        "default_04_nozzle": "10",
+        "recommended_range": "10 - 20 mm/s",
+        "summary": "Speed for extreme overhangs (>70 deg from vertical) and curved perimeter bridges.",
+        "when_to_change": "Keep at 10-15 mm/s so extreme overhangs and support interfaces anchor cleanly without curling.",
+        "tradeoffs": "Only affects extreme overhang perimeters.",
+    },
+    "slow_down_for_layer_cooling": {
+        "gui_tab": "Filament Settings -> Cooling",
+        "gui_label": "Slow printing down for better layer cooling",
+        "type": "bool string ('0' or '1')",
+        "default_04_nozzle": "1",
+        "summary": "Automatically reduces print speed on small layers (spires, chimneys, miniature heads) so each layer has at least 'Max fan speed threshold' seconds to solidify before the next layer is deposited.",
+        "when_to_change": "Keep enabled ('1') for miniatures, benchy smokestacks, and thin pins. Disable ('0') ONLY if speed variations cause gloss/matte banding on uniform cylinders and part cooling is already sufficient.",
+        "tradeoffs": "Can noticeably change surface gloss on layers where the cross-section narrows suddenly.",
+    },
+    "min_print_speed": {
+        "gui_tab": "Filament Settings -> Cooling",
+        "gui_label": "Min print speed",
+        "type": "float (mm/s)",
+        "default_04_nozzle": "20",
+        "recommended_range": "10 - 30 mm/s",
+        "summary": "Floor speed limit when 'slow_down_for_layer_cooling' throttles small-layer printing.",
+        "when_to_change": "Lower to 10-15 mm/s for tiny spire tips, or raise to 25-30 mm/s if the hot nozzle lingering on a tiny tip melts the plastic into a blob.",
+        "tradeoffs": "Too low (<10 mm/s) keeps the radiant hotend block parked over the tiny feature, softening it.",
+    },
 
     # --- SUPPORT TAB ---
     "enable_support": {
@@ -251,8 +360,56 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "when_to_change": "Bambu printers have strong part cooling and easily print 25-30 deg from horizontal without support. Raise to 35-40 deg if steep overhangs curl.",
         "tradeoffs": "Higher angle generates more supports.",
     },
+    "support_filament": {
+        "gui_tab": "Support -> Filament for Supports",
+        "gui_label": "Support/raft base",
+        "type": "int (AMS slot index, 0 = default)",
+        "default_04_nozzle": "0",
+        "summary": "Selects which AMS filament slot builds the main structural body of supports and rafts.",
+        "when_to_change": "Keep at '0' (Default = same filament as model) even when using dedicated support material! Only change support_interface_filament so you don't waste expensive support filament and hundreds of AMS swaps on the entire support tower.",
+        "tradeoffs": "Setting base support to a different filament forces an AMS swap on every single layer from the bed up.",
+    },
+    "support_interface_filament": {
+        "gui_tab": "Support -> Filament for Supports",
+        "gui_label": "Support/raft interface",
+        "type": "int (AMS slot index, 0 = default)",
+        "default_04_nozzle": "0",
+        "summary": "Selects a dedicated AMS filament slot (such as PETG interface for PLA prints, PLA interface for PETG prints, or Bambu Support for PLA/PA) for the top 2-3 roof layers touching the part.",
+        "when_to_change": "Assign to your AMS slot loaded with breakaway interface material, then set support_top_z_distance = 0.0mm and support_interface_spacing = 0.0mm for injection-molded-smooth supported undersides that peel off with zero force.",
+        "tradeoffs": "Adds 2-3 AMS filament swaps at the height of each supported overhang ledge; requires adequate flush volume (~400-600mm³) when swapping between PLA and PETG so interlayer strength isn't contaminated.",
+    },
 
     # --- OTHERS TAB (ADHESION / MULTI-COLOR / SPECIAL) ---
+    "fuzzy_skin": {
+        "gui_tab": "Others -> Special mode",
+        "gui_label": "Fuzzy skin",
+        "type": "enum",
+        "options": ["none", "external", "all", "allwalls"],
+        "default_04_nozzle": "none",
+        "summary": "Oscillates the nozzle randomly in X/Y along perimeter walls to create a uniform matte, pebble-textured grip finish that completely hides layer lines.",
+        "when_to_change": "Set to 'external' (Contour) for tool handles, camera grips, planters, and enclosures where an injection-molded VDI-style matte texture is desired without affecting internal hole clearances.",
+        "tradeoffs": "Increases outer wall print time by ~15-25%; never use 'all' on mating holes or threads.",
+    },
+    "fuzzy_skin_point_distance": {
+        "gui_tab": "Others -> Special mode",
+        "gui_label": "Fuzzy skin point distance",
+        "type": "float (mm)",
+        "default_04_nozzle": "0.8",
+        "recommended_range": "0.3 - 0.8 mm",
+        "summary": "Average distance along the perimeter between random oscillation points for Fuzzy Skin.",
+        "when_to_change": "Decrease to 0.3-0.4mm (paired with fuzzy_skin_thickness = 0.15-0.20mm) for a fine sandpaper/Powder-coat texture; keep at 0.6-0.8mm for a coarser knurled stone look.",
+        "tradeoffs": "Smaller point distance generates many more tiny G-code segments (use Arachne or simplify mesh if buffer stutters).",
+    },
+    "fuzzy_skin_thickness": {
+        "gui_tab": "Others -> Special mode",
+        "gui_label": "Fuzzy skin thickness",
+        "type": "float (mm)",
+        "default_04_nozzle": "0.3",
+        "recommended_range": "0.10 - 0.30 mm",
+        "summary": "Maximum peak-to-valley amplitude of the random X/Y wall jitter in Fuzzy Skin mode.",
+        "when_to_change": "0.15mm gives a subtle matte consumer-electronics texture; 0.25-0.30mm gives a heavy tactile grip.",
+        "tradeoffs": "Adds roughly fuzzy_skin_thickness to the effective outer width of the part.",
+    },
     "brim_type": {
         "gui_tab": "Others -> Bed adhesion",
         "gui_label": "Brim type",
@@ -283,6 +440,44 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "when_to_change": "0.10-0.12mm makes the brim peel off cleanly by hand without a deburring knife; 0.0mm gives maximum anti-warping grip for ABS/ASA.",
         "tradeoffs": "0.0mm requires a deburring tool to clean up.",
     },
+    "draft_shield": {
+        "gui_tab": "Others -> Bed adhesion",
+        "gui_label": "Draft shield",
+        "type": "enum or bool ('0'/'1' or 'disabled'/'enabled')",
+        "default_04_nozzle": "0",
+        "summary": "Builds a thin single-wall skirt wall all the way up around the model to trap rising warm air from the bed and block room air drafts.",
+        "when_to_change": "Enable when printing warping-prone filaments (ABS, ASA, Nylon) on open-frame printers (A1 / A1 mini / P1P) without an enclosure.",
+        "tradeoffs": "Consumes extra filament and print time for the sacrificial perimeter shield.",
+    },
+    "enable_prime_tower": {
+        "gui_tab": "Others -> Prime tower",
+        "gui_label": "Enable prime tower",
+        "type": "bool string ('0' or '1')",
+        "default_04_nozzle": "1",
+        "summary": "Prints a small auxiliary tower on the build plate during multi-color / multi-material prints to stabilize nozzle pressure and wipe ooze after each AMS filament swap.",
+        "when_to_change": "Keep enabled ('1') for all multi-color prints and smooth timelapses so the nozzle restarts on the model with crisp pressure and zero blobs.",
+        "tradeoffs": "Takes up a small rectangle on the build plate and uses a modest amount of filament.",
+    },
+    "prime_tower_width": {
+        "gui_tab": "Others -> Prime tower",
+        "gui_label": "Tower width",
+        "type": "float (mm)",
+        "default_04_nozzle": "35",
+        "recommended_range": "15 - 45 mm",
+        "summary": "X-dimension width of the multi-color prime tower.",
+        "when_to_change": "Reduce to 15-25mm (paired with prime_tower_minimal_volume = 15-25mm³) when plate space is tight or to save filament on tall prints.",
+        "tradeoffs": "Very narrow tall prime towers (<15mm) can wobble unless prime_tower_brim_width is increased.",
+    },
+    "prime_tower_brim_width": {
+        "gui_tab": "Others -> Prime tower",
+        "gui_label": "Brim width (Prime tower)",
+        "type": "float (mm)",
+        "default_04_nozzle": "3",
+        "recommended_range": "3 - 8 mm",
+        "summary": "Width of the stabilizing first-layer brim specifically around the prime tower.",
+        "when_to_change": "Increase to 5-8mm on tall multi-color prints or when mixing incompatible materials (PLA + PETG support interface) so the prime tower never detaches mid-print.",
+        "tradeoffs": "Slightly increases the footprint around the prime tower base.",
+    },
     "flush_into_infill": {
         "gui_tab": "Others -> Flush options",
         "gui_label": "Flush into objects' infill",
@@ -291,6 +486,26 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "summary": "During AMS multi-color changes, purges old filament color inside the internal infill of the part instead of ejecting waste ('poop').",
         "when_to_change": "Enable ('1') on opaque multi-color models to reduce filament waste and purge time. Do NOT enable if purging dark black into thin white walls (can bleed through visually).",
         "tradeoffs": "Dark internal infill can show through thin translucent/white shells if wall_loops < 3.",
+    },
+    "flush_multiplier": {
+        "gui_tab": "Prepare Tab -> Flushing Volumes",
+        "gui_label": "Multiplier (Flushing Volumes)",
+        "type": "float",
+        "default_04_nozzle": "1.0",
+        "recommended_range": "0.5 - 1.0",
+        "summary": "Global multiplier scaling all color-to-color AMS purge volumes in the flushing matrix.",
+        "when_to_change": "Drop to 0.6 - 0.7 for standard multi-color PLA prints to cut AMS 'poop' waste by 30-40% without color bleed; raise to 1.2+ when swapping between incompatible materials (PLA <-> PETG).",
+        "tradeoffs": "Too low (<0.5) when transitioning from dark (black/red) to light (white/yellow) can leave pastel color tinting.",
+    },
+    "flush_volumes_matrix": {
+        "gui_tab": "Prepare Tab -> Flushing Volumes",
+        "gui_label": "Flushing Volumes Matrix (mm³)",
+        "type": "list of floats (N x N matrix flattened)",
+        "default_04_nozzle": "auto-calculated per color pair",
+        "recommended_range": "100 - 800 mm³ per swap",
+        "summary": "Exact volume of filament (in mm³) purged down the waste chute for every From-Slot -> To-Slot transition in the AMS.",
+        "when_to_change": "Use ~120-180 mm³ for light-to-dark transitions (White -> Black), ~350-500 mm³ for dark-to-light transitions (Black -> White), and 500-700 mm³ for PLA <-> PETG support swaps to eliminate cross-contamination.",
+        "tradeoffs": "Directly governs total multi-color filament waste ('poop' weight) and swap duration.",
     },
     "spiral_mode": {
         "gui_tab": "Others -> Special mode",
@@ -310,6 +525,16 @@ SETTINGS_ENCYCLOPEDIA: Dict[str, Dict[str, Any]] = {
         "summary": "'by object' finishes one entire object on the plate before moving to the next.",
         "when_to_change": "Use 'by object' when printing multiple small parts in different colors (reduces AMS color swaps from hundreds to just 1 per color!) or when reducing stringing between parts.",
         "tradeoffs": "Requires extra spacing between objects on the plate so the printhead doesn't collide with finished parts.",
+    },
+    "timelapse_type": {
+        "gui_tab": "Others -> Special mode",
+        "gui_label": "Timelapse",
+        "type": "enum",
+        "options": ["traditional", "smooth"],
+        "default_04_nozzle": "traditional",
+        "summary": "Controls how the built-in chamber camera captures layer-by-layer timelapse video. 'Traditional' snaps a frame while printing; 'Smooth' parks the toolhead over the purge chute before each frame so the part appears to grow by magic.",
+        "when_to_change": "Use 'traditional' for zero print defects and zero extra time. Switch to 'smooth' only for showcase social-media videos (automatically enables a prime tower to catch nozzle ooze while the head parks).",
+        "tradeoffs": "'Smooth' timelapse adds travel time on every layer and requires a prime tower so nozzle ooze during camera parking doesn't leave strings on the model.",
     },
 }
 
@@ -778,3 +1003,196 @@ def diagnose_print_issue(symptom_description: str) -> Dict[str, Any]:
         "symptom_description": symptom_description,
         "matched_issues": matches,
     }
+
+
+# ---------------------------------------------------------------------------
+# 4. BAMBU STUDIO FILAMENT CALIBRATION ENGINE
+# ---------------------------------------------------------------------------
+FILAMENT_CALIBRATION_TARGETS: Dict[str, Dict[str, Any]] = {
+    "PLA": {
+        "k_factor_range": "0.015 - 0.025 (Direct Drive 0.4mm nozzle)",
+        "flow_ratio_typical": "0.96 - 0.99",
+        "max_volumetric_speed_mm3_s": "18 - 24 mm³/s (Standard PLA) / 24 - 28 mm³/s (Bambu PLA Basic/High Speed)",
+        "nozzle_temp_range_c": "210 - 230 °C (Tower range: 195 - 235 °C)",
+        "retraction_length_mm": "0.6 - 0.8 mm @ 30 mm/s",
+    },
+    "SILK": {
+        "k_factor_range": "0.020 - 0.030 (Direct Drive 0.4mm nozzle)",
+        "flow_ratio_typical": "0.95 - 0.98 (die swell requires carefully tuned flow)",
+        "max_volumetric_speed_mm3_s": "10 - 14 mm³/s (keep outer wall 50-70 mm/s for mirror shine)",
+        "nozzle_temp_range_c": "215 - 235 °C (Higher temp = higher gloss)",
+        "retraction_length_mm": "0.6 - 0.8 mm @ 30 mm/s (Normal Z-hop)",
+    },
+    "PETG": {
+        "k_factor_range": "0.025 - 0.045 (Direct Drive 0.4mm nozzle)",
+        "flow_ratio_typical": "0.94 - 0.97 (slightly lower to prevent nozzle blob buildup)",
+        "max_volumetric_speed_mm3_s": "11 - 16 mm³/s (Standard PETG) / 18 - 22 mm³/s (PETG-HF)",
+        "nozzle_temp_range_c": "245 - 265 °C (Tower range: 235 - 270 °C)",
+        "retraction_length_mm": "0.8 - 1.0 mm @ 30 mm/s (set Z-hop type to Normal to prevent wisps)",
+    },
+    "ABS": {
+        "k_factor_range": "0.018 - 0.030 (Direct Drive 0.4mm nozzle)",
+        "flow_ratio_typical": "0.94 - 0.98",
+        "max_volumetric_speed_mm3_s": "16 - 22 mm³/s",
+        "nozzle_temp_range_c": "255 - 275 °C (Tower range: 245 - 280 °C, Chamber >45 °C)",
+        "retraction_length_mm": "0.6 - 0.8 mm @ 30 mm/s",
+    },
+    "ASA": {
+        "k_factor_range": "0.018 - 0.030 (Direct Drive 0.4mm nozzle)",
+        "flow_ratio_typical": "0.94 - 0.98",
+        "max_volumetric_speed_mm3_s": "15 - 20 mm³/s",
+        "nozzle_temp_range_c": "255 - 275 °C (Tower range: 245 - 280 °C, Chamber >45 °C)",
+        "retraction_length_mm": "0.6 - 0.8 mm @ 30 mm/s",
+    },
+    "TPU": {
+        "k_factor_range": "0.060 - 0.120 (higher elasticity requires higher K-factor)",
+        "flow_ratio_typical": "0.98 - 1.03",
+        "max_volumetric_speed_mm3_s": "3.2 - 6.5 mm³/s (95A TPU)",
+        "nozzle_temp_range_c": "220 - 240 °C (Tower range: 210 - 245 °C)",
+        "retraction_length_mm": "0.4 - 0.6 mm @ 20 mm/s (avoid long/fast retractions that jam soft filament)",
+    },
+    "PA": {
+        "k_factor_range": "0.020 - 0.035 (Direct Drive 0.4mm nozzle)",
+        "flow_ratio_typical": "0.95 - 0.99",
+        "max_volumetric_speed_mm3_s": "10 - 15 mm³/s",
+        "nozzle_temp_range_c": "270 - 295 °C (Dry at 80 °C for 12h before calibrating!)",
+        "retraction_length_mm": "0.8 - 1.0 mm @ 30 mm/s",
+    },
+}
+
+
+def get_calibration_guide(
+    calibration_type: str = "all",
+    filament_type: str = "PLA",
+) -> Dict[str, Any]:
+    """Return step-by-step Bambu Studio Calibration tab workflows, formulas, and target values."""
+    fil_upper = filament_type.strip().upper()
+    target_key = "PLA"
+    for candidate in ("SILK", "PETG", "ABS", "ASA", "TPU", "PA"):
+        if candidate in fil_upper:
+            target_key = candidate
+            break
+    if "NYLON" in fil_upper:
+        target_key = "PA"
+
+    targets = FILAMENT_CALIBRATION_TARGETS[target_key]
+
+    workflows: Dict[str, Dict[str, Any]] = {
+        "flow_dynamics": {
+            "title": "1. Flow Dynamics Calibration (Pressure Advance / K-Factor)",
+            "bambu_studio_location": "Top Navigation Bar -> Calibration -> Flow Dynamics",
+            "purpose": (
+                "Compensates for molten plastic pressure lag inside the nozzle during rapid acceleration "
+                "and deceleration. Eliminates bulging sharp corners, gaps at seam restarts, and uneven line widths."
+            ),
+            "recommended_target": targets["k_factor_range"],
+            "steps": [
+                "Open the 'Calibration' tab at the top of Bambu Studio and select 'Flow Dynamics'.",
+                "Choose 'Manual' calibration (Line Method or Pattern Method) or 'Auto-Calibration' (X1C / A1 eddy-current / Micro-Lidar).",
+                "Set K-value range: for Direct Drive 0.4mm nozzles, start at 0.000, end at 0.050 (or 0.120 for TPU), step 0.005.",
+                "Inspect the printed lines/chevrons: pick the K-value where the transition between slow->fast->slow extrusion is most uniform without thinning gaps (K too high) or blobs/bulges (K too low).",
+                "Click 'Manage Result' in the Calibration tab (or Device -> AMS slot edit) to save the K-factor profile and bind it to your filament slot.",
+            ],
+            "formula_and_rules": {
+                "parameter_name": "pressure_advance (K-factor)",
+                "rule_of_thumb": "Always run Flow Dynamics (K-factor) BEFORE Flow Rate calibration so corner pressure doesn't skew surface smoothness.",
+            },
+        },
+        "flow_rate": {
+            "title": "2. Flow Rate Calibration (Pass 1 & Pass 2 Extrusion Multiplier)",
+            "bambu_studio_location": "Top Navigation Bar -> Calibration -> Flow Rate",
+            "purpose": (
+                "Tunes the exact volume of plastic extruded (`filament_flow_ratio`) so top surfaces are glassy smooth "
+                "without gaps between lines (under-extrusion) or rough plowed ridges (over-extrusion)."
+            ),
+            "recommended_target": targets["flow_ratio_typical"],
+            "steps": [
+                "In the 'Calibration' tab, select 'Flow Rate' -> 'Pass 1' (coarse test chips from -20 to +20).",
+                "Examine the 9 printed test swatches by sight and fingernail feel across the center (ignore perimeter edges). Select the smoothest swatch modifier (e.g., +5 or 0).",
+                "Enter that Pass 1 value into Bambu Studio to generate 'Pass 2' (fine test chips from -9 to +0 around your Pass 1 winner).",
+                "After Pass 2 finishes, pick the smoothest chip modifier and let Bambu Studio calculate and save the updated Flow Ratio into your custom Filament Preset (`filament_flow_ratio`).",
+            ],
+            "formula_and_rules": {
+                "formula": "New Ratio = Old Ratio * (100 + modifier) / 100",
+                "example": (
+                    "If Old Ratio = 0.98 and Pass 1 winner is +5: Pass 1 Ratio = 0.98 * (100 + 5) / 100 = 1.029. "
+                    "If Pass 2 winner is -2: Final Ratio = 1.029 * (100 - 2) / 100 = 1.008."
+                ),
+            },
+        },
+        "max_volumetric_speed": {
+            "title": "3. Max Volumetric Speed Calibration (mm³/s Hotend Melt Ceiling)",
+            "bambu_studio_location": "Filament Settings -> Filament -> Max volumetric speed (or Calibration -> More)",
+            "purpose": (
+                "Finds the maximum cubic millimeters of plastic per second (mm³/s) your hotend can fully melt before "
+                "the extruder clicks, skips steps, or prints dull/under-extruded brittle layers."
+            ),
+            "recommended_target": targets["max_volumetric_speed_mm3_s"],
+            "steps": [
+                "Generate a Max Volumetric Speed tower (starting at 8 mm³/s, stepping by +0.5 mm³/s per millimeter of Z height up to 30 mm³/s).",
+                "Watch and inspect the meandering wall as Z height increases: note the exact height (mm) where surface sheen turns matte, wavy, or under-extruded.",
+                "Compute the failure volumetric flow rate and subtract 10-15% as a safety margin.",
+                "Save the safe value in Filament Settings -> 'Max volumetric speed' (`filament_max_volumetric_speed`). Bambu Studio will automatically cap all print speeds whenever `Speed * Line Width * Layer Height` reaches this ceiling!",
+            ],
+            "formula_and_rules": {
+                "volumetric_flow_formula": "Volumetric Flow (mm³/s) = Print Speed (mm/s) * Line Width (mm) * Layer Height (mm)",
+                "tower_height_formula": "Flow at Height Z = Start_Flow + (Z_height_mm * Step_per_mm)  (Safe Target = Failure_Flow * 0.85)",
+                "speed_cap_example": "At 21 mm³/s with 0.42mm line width and 0.20mm layer height, Bambu Studio automatically caps print speed at 21 / (0.42 * 0.20) = 250 mm/s.",
+            },
+        },
+        "temperature_and_retraction": {
+            "title": "4. Temperature Tower & Retraction / Stringing Test",
+            "bambu_studio_location": "Filament Settings -> Filament (Nozzle Temp) & Setting Overrides (Retraction)",
+            "purpose": (
+                "Identifies the optimal nozzle temperature for inter-layer strength, overhang crispness, and minimal stringing, "
+                "then fine-tunes retraction distance and Z-hop style."
+            ),
+            "recommended_target": {
+                "nozzle_temp": targets["nozzle_temp_range_c"],
+                "retraction": targets["retraction_length_mm"],
+            },
+            "steps": [
+                "Dry the filament first! Wet PETG/TPU/PA/PLA will string at every temperature and invalidate retraction tests.",
+                "Print a Temperature Tower spanning the filament's range in 5 °C increments (e.g., 230 °C down to 195 °C for PLA; 265 °C down to 235 °C for PETG).",
+                "Inspect bridges, 45°/60° overhang cones, and stringing pins on each tier; test layer adhesion by trying to snap the tier joints with pliers.",
+                "Pick the lowest temperature that still delivers strong layer bonding and uniform surface gloss.",
+                "If fine cobweb wisps remain, print a 2-post Retraction Tower and adjust Filament Settings -> Setting Overrides -> 'Retraction length' (0.6-1.0mm) and change 'Z hop type' from 'Auto/Spiral' to 'Normal'.",
+            ],
+            "formula_and_rules": {
+                "golden_rule": "Never exceed 1.2mm retraction length on Bambu Direct Drive all-metal hotends, or molten filament can be pulled into the cold zone and cause heat-creep clogs.",
+            },
+        },
+    }
+
+    q = calibration_type.strip().lower()
+    if q in ("all", "", "*"):
+        selected = workflows
+    else:
+        selected = {}
+        alias_map = {
+            "flow_dynamics": ["flow_dynamics", "dynamics", "pressure", "pa", "k-factor", "k_factor", "k factor"],
+            "flow_rate": ["flow_rate", "flow rate", "pass 1", "pass 2", "extrusion multiplier", "ratio"],
+            "max_volumetric_speed": ["max_volumetric_speed", "volumetric", "mvs", "mm3", "speed", "ceiling"],
+            "temperature_and_retraction": ["temperature_and_retraction", "temp", "temperature", "retraction", "stringing", "tower"],
+        }
+        for key, aliases in alias_map.items():
+            if q == key or any(a in q for a in aliases):
+                selected[key] = workflows[key]
+        if not selected:
+            selected = workflows
+
+    return {
+        "calibration_type": calibration_type,
+        "filament_type": filament_type,
+        "matched_material_profile": target_key,
+        "recommended_calibration_order": [
+            "1. Dry Filament & Temperature Tower (establish thermal baseline)",
+            "2. Flow Dynamics / Pressure Advance K-Factor (stabilize corner & acceleration pressure)",
+            "3. Flow Rate Pass 1 & Pass 2 (`New Ratio = Old Ratio * (100 + modifier) / 100`)",
+            "4. Max Volumetric Speed Ceiling (`mm³/s = Speed * Line Width * Layer Height`)",
+            "5. Retraction & Z-Hop Fine Tuning",
+        ],
+        "target_values_for_filament": targets,
+        "workflows": selected,
+    }
+

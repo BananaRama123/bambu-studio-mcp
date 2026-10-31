@@ -709,3 +709,427 @@ def add_empty_plate_to_3mf(
         "total_plates": len(existing_plates) + 1,
     }
 
+
+def list_plates_in_3mf(input_3mf_path: str) -> Dict[str, Any]:
+    """Inspect Metadata/model_settings.config inside a .3mf archive and return all <plate> entries."""
+    src = Path(input_3mf_path)
+    if not src.exists():
+        return {"error": f"Input .3mf not found: '{input_3mf_path}'"}
+    if not zipfile.is_zipfile(src):
+        return {"error": f"'{input_3mf_path}' is not a valid .3mf archive."}
+
+    with zipfile.ZipFile(src, "r") as zin:
+        names = zin.namelist()
+        if "Metadata/model_settings.config" not in names:
+            return {
+                "success": True,
+                "input_3mf": str(src),
+                "total_plates": 0,
+                "plates": [],
+            }
+
+        try:
+            root = ET.fromstring(zin.read("Metadata/model_settings.config"))
+        except Exception as exc:
+            return {"error": f"Failed to parse Metadata/model_settings.config: {exc}"}
+
+        object_names: Dict[str, str] = {}
+        for obj in root.findall("object"):
+            obj_id = obj.attrib.get("id")
+            if not obj_id:
+                continue
+            for m in obj.findall("metadata"):
+                if m.attrib.get("key") == "name" and m.attrib.get("value"):
+                    object_names[obj_id] = m.attrib["value"]
+                    break
+
+        plates: List[Dict[str, Any]] = []
+        for idx, plate_elem in enumerate(root.findall("plate"), start=1):
+            meta_map: Dict[str, str] = {}
+            for m in plate_elem.findall("metadata"):
+                k = m.attrib.get("key")
+                v = m.attrib.get("value", "")
+                if k:
+                    meta_map[k] = v
+
+            raw_id = meta_map.get("plater_id", str(idx))
+            try:
+                plater_id: Any = int(raw_id)
+            except ValueError:
+                plater_id = raw_id
+
+            plater_name = meta_map.get("plater_name", "")
+            locked_str = meta_map.get("locked", "false").lower()
+            locked = locked_str in ("true", "1", "yes")
+
+            instances: List[Dict[str, Any]] = []
+            for inst_elem in plate_elem.findall("model_instance"):
+                inst_data: Dict[str, Any] = dict(inst_elem.attrib)
+                for im in inst_elem.findall("metadata"):
+                    ik = im.attrib.get("key")
+                    iv = im.attrib.get("value", "")
+                    if ik:
+                        inst_data[ik] = iv
+                obj_id = inst_data.get("object_id")
+                if obj_id and obj_id in object_names and "object_name" not in inst_data:
+                    inst_data["object_name"] = object_names[obj_id]
+                instances.append(inst_data)
+
+            plates.append({
+                "plater_id": plater_id,
+                "plater_name": plater_name,
+                "locked": locked,
+                "model_instances": instances,
+                "instance_count": len(instances),
+            })
+
+    return {
+        "success": True,
+        "input_3mf": str(src),
+        "total_plates": len(plates),
+        "plates": plates,
+    }
+
+
+def remove_plate_from_3mf(
+    input_3mf_path: str,
+    plate_id: int,
+    output_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Remove a <plate> by plater_id from Metadata/model_settings.config and re-number remaining plates 1..N."""
+    src = Path(input_3mf_path)
+    if not src.exists():
+        return {"error": f"Input .3mf not found: '{input_3mf_path}'"}
+    if not zipfile.is_zipfile(src):
+        return {"error": f"'{input_3mf_path}' is not a valid .3mf archive."}
+
+    dest = Path(output_3mf_path) if output_3mf_path else src
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest.with_suffix(".3mf.tmp")
+    target_id_str = str(plate_id)
+
+    with zipfile.ZipFile(src, "r") as zin:
+        names = zin.namelist()
+        if "Metadata/model_settings.config" not in names:
+            return {"error": f"Metadata/model_settings.config not found in '{input_3mf_path}'."}
+
+        try:
+            root = ET.fromstring(zin.read("Metadata/model_settings.config"))
+        except Exception as exc:
+            return {"error": f"Failed to parse Metadata/model_settings.config: {exc}"}
+
+        existing_plates = root.findall("plate")
+        target_plate: Optional[ET.Element] = None
+        available_ids: List[str] = []
+        removed_plate_name = ""
+        removed_instances_count = 0
+
+        for p in existing_plates:
+            pid_val = ""
+            pname_val = ""
+            for m in p.findall("metadata"):
+                if m.attrib.get("key") == "plater_id":
+                    pid_val = m.attrib.get("value", "")
+                elif m.attrib.get("key") == "plater_name":
+                    pname_val = m.attrib.get("value", "")
+            if pid_val:
+                available_ids.append(pid_val)
+            if pid_val == target_id_str and target_plate is None:
+                target_plate = p
+                removed_plate_name = pname_val
+                removed_instances_count = len(p.findall("model_instance"))
+
+        if target_plate is None:
+            return {
+                "error": f"Plate with plater_id={plate_id} not found in '{input_3mf_path}'.",
+                "available_plate_ids": available_ids,
+            }
+
+        root.remove(target_plate)
+
+        remaining_plates = root.findall("plate")
+        renumbered_ids: List[int] = []
+        for new_idx, p in enumerate(remaining_plates, start=1):
+            id_meta: Optional[ET.Element] = None
+            for m in p.findall("metadata"):
+                if m.attrib.get("key") == "plater_id":
+                    id_meta = m
+                    break
+            if id_meta is not None:
+                id_meta.set("value", str(new_idx))
+            else:
+                ET.SubElement(p, "metadata", {"key": "plater_id", "value": str(new_idx)})
+            renumbered_ids.append(new_idx)
+
+        new_xml_bytes = b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="utf-8")
+
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "Metadata/model_settings.config":
+                    continue
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr("Metadata/model_settings.config", new_xml_bytes)
+
+    shutil.move(str(tmp_path), str(dest))
+    return {
+        "success": True,
+        "input_3mf": str(src),
+        "output_3mf": str(dest),
+        "removed_plate_id": plate_id,
+        "removed_plate_name": removed_plate_name,
+        "removed_model_instances": removed_instances_count,
+        "total_plates": len(remaining_plates),
+        "remaining_plate_ids": renumbered_ids,
+    }
+
+
+def move_object_to_plate_in_3mf(
+    input_3mf_path: str,
+    object_identifier: str,
+    target_plate_id: int,
+    output_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Move every <model_instance> matching an object_id or object name to another <plate>.
+
+    Edits Metadata/model_settings.config only, creating the target plate if it does not exist.
+    Build-item transforms in 3D/3dmodel.model are left unchanged.
+    """
+    src = Path(input_3mf_path)
+    if not src.exists():
+        return {"error": f"Input .3mf not found: '{input_3mf_path}'"}
+    if not zipfile.is_zipfile(src):
+        return {"error": f"'{input_3mf_path}' is not a valid .3mf archive."}
+    if not object_identifier:
+        return {"error": "object_identifier must not be empty."}
+    if target_plate_id < 1:
+        return {"error": f"target_plate_id must be >= 1, got {target_plate_id}."}
+
+    dest = Path(output_3mf_path) if output_3mf_path else src
+    tmp_path = dest.with_suffix(".3mf.tmp")
+    target_id_str = str(target_plate_id)
+
+    def metadata_map(elem: ET.Element) -> Dict[str, str]:
+        return {
+            m.attrib["key"]: m.attrib.get("value", "")
+            for m in elem.findall("metadata")
+            if m.attrib.get("key")
+        }
+
+    with zipfile.ZipFile(src, "r") as zin:
+        if "Metadata/model_settings.config" not in zin.namelist():
+            return {"error": f"Metadata/model_settings.config not found in '{input_3mf_path}'."}
+
+        try:
+            root = ET.fromstring(zin.read("Metadata/model_settings.config"))
+        except Exception as exc:
+            return {"error": f"Failed to parse Metadata/model_settings.config: {exc}"}
+
+        object_names: Dict[str, str] = {}
+        for obj in root.findall("object"):
+            obj_id = obj.attrib.get("id")
+            obj_name = metadata_map(obj).get("name")
+            if obj_id and obj_name:
+                object_names[obj_id] = obj_name
+
+        plates = [(p, metadata_map(p).get("plater_id", "")) for p in root.findall("plate")]
+
+        matches: List[Tuple[ET.Element, ET.Element, str, Dict[str, str]]] = []
+        for plate_elem, plate_id_str in plates:
+            for inst_elem in plate_elem.findall("model_instance"):
+                inst_data = {**inst_elem.attrib, **metadata_map(inst_elem)}
+                obj_id = inst_data.get("object_id", "")
+                obj_name = inst_data.get("object_name") or object_names.get(obj_id, "")
+                if object_identifier in (obj_id, obj_name):
+                    inst_data["object_name"] = obj_name
+                    matches.append((plate_elem, inst_elem, plate_id_str, inst_data))
+
+        if not matches:
+            return {
+                "error": f"No model instance matches object id or name '{object_identifier}' in '{input_3mf_path}'.",
+                "available_objects": object_names,
+            }
+
+        target_plate = next((p for p, pid in plates if pid == target_id_str), None)
+        plate_created = target_plate is None
+        if target_plate is None:
+            target_plate = ET.Element("plate")
+            ET.SubElement(target_plate, "metadata", {"key": "plater_id", "value": target_id_str})
+            ET.SubElement(target_plate, "metadata", {"key": "plater_name", "value": ""})
+            ET.SubElement(target_plate, "metadata", {"key": "locked", "value": "false"})
+            # Keep <plate> elements contiguous so a trailing <assemble> section stays last.
+            insert_at = list(root).index(plates[-1][0]) + 1 if plates else len(root)
+            root.insert(insert_at, target_plate)
+
+        moved_instances: List[Dict[str, str]] = []
+        for source_plate, inst_elem, source_id_str, inst_data in matches:
+            if source_plate is target_plate:
+                continue
+            source_plate.remove(inst_elem)
+            target_plate.append(inst_elem)
+            moved_instances.append({
+                "object_id": inst_data.get("object_id", ""),
+                "instance_id": inst_data.get("instance_id", ""),
+                "object_name": inst_data["object_name"],
+                "from_plate_id": source_id_str,
+            })
+
+        new_xml_bytes = b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="utf-8")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "Metadata/model_settings.config":
+                    continue
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr("Metadata/model_settings.config", new_xml_bytes)
+
+    shutil.move(str(tmp_path), str(dest))
+    return {
+        "success": True,
+        "input_3mf": str(src),
+        "output_3mf": str(dest),
+        "object_identifier": object_identifier,
+        "target_plate_id": target_plate_id,
+        "target_plate_created": plate_created,
+        "moved_count": len(moved_instances),
+        "already_on_target_count": len(matches) - len(moved_instances),
+        "moved_instances": moved_instances,
+        "total_plates": len(plates) + (1 if plate_created else 0),
+    }
+
+
+def _serialize_object_setting(value: Any) -> str:
+    """Convert a Python value to the string form used by model_settings.config metadata."""
+    if isinstance(value, bool):
+        # Bambu config booleans are "1"/"0"; str(True) would not parse as true.
+        return "1" if value else "0"
+    if isinstance(value, (list, tuple)):
+        return ",".join(_serialize_object_setting(v) for v in value)
+    if value is None or isinstance(value, dict):
+        raise ValueError(f"unsupported value {value!r}")
+    return str(value)
+
+
+def set_object_settings_in_3mf(
+    input_3mf_path: str,
+    object_identifier: str,
+    settings_overrides: Dict[str, Any],
+    output_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create or update per-object <metadata> settings in Metadata/model_settings.config.
+
+    object_identifier is resolved against the most specific match available: <object id>, then
+    the object's "name" metadata (every object sharing the name is updated), then a
+    <model_instance> "object_name" or "identify_id". instance_id is not matched because it is
+    only unique within an object. Writes in place unless output_3mf_path is given.
+    """
+    src = Path(input_3mf_path)
+    if not src.exists():
+        return {"error": f"Input .3mf not found: '{input_3mf_path}'"}
+    if not zipfile.is_zipfile(src):
+        return {"error": f"'{input_3mf_path}' is not a valid .3mf archive."}
+    if not object_identifier:
+        return {"error": "object_identifier must not be empty."}
+    if not settings_overrides:
+        return {"error": "settings_overrides must not be empty."}
+
+    serialized: Dict[str, str] = {}
+    for key, value in settings_overrides.items():
+        if not key:
+            return {"error": "settings_overrides keys must not be empty."}
+        try:
+            serialized[key] = _serialize_object_setting(value)
+        except ValueError as exc:
+            return {"error": f"Invalid value for setting '{key}': {exc}"}
+
+    dest = Path(output_3mf_path) if output_3mf_path else src
+    tmp_path = dest.with_suffix(".3mf.tmp")
+
+    def metadata_map(elem: ET.Element) -> Dict[str, str]:
+        return {
+            m.attrib["key"]: m.attrib.get("value", "")
+            for m in elem.findall("metadata")
+            if m.attrib.get("key")
+        }
+
+    with zipfile.ZipFile(src, "r") as zin:
+        if "Metadata/model_settings.config" not in zin.namelist():
+            return {"error": f"Metadata/model_settings.config not found in '{input_3mf_path}'."}
+
+        try:
+            root = ET.fromstring(zin.read("Metadata/model_settings.config"))
+        except Exception as exc:
+            return {"error": f"Failed to parse Metadata/model_settings.config: {exc}"}
+
+        objects = root.findall("object")
+        matches = [o for o in objects if o.attrib.get("id") == object_identifier]
+        matched_by = "id"
+        if not matches:
+            matches = [o for o in objects if metadata_map(o).get("name") == object_identifier]
+            matched_by = "name"
+        if not matches:
+            instance_object_ids = set()
+            for inst_elem in root.iter("model_instance"):
+                inst_data = {**inst_elem.attrib, **metadata_map(inst_elem)}
+                if object_identifier in (inst_data.get("object_name"), inst_data.get("identify_id")):
+                    instance_object_ids.add(inst_data.get("object_id"))
+            matches = [o for o in objects if o.attrib.get("id") in instance_object_ids]
+            matched_by = "model_instance"
+
+        if not matches:
+            return {
+                "error": f"No object matches id, name, or model instance '{object_identifier}' in '{input_3mf_path}'.",
+                "available_objects": {
+                    o.attrib.get("id", ""): metadata_map(o).get("name", "") for o in objects
+                },
+            }
+
+        updated_objects: List[Dict[str, Any]] = []
+        for obj in matches:
+            created_keys: List[str] = []
+            updated_keys: List[str] = []
+            for key, value in serialized.items():
+                existing = [m for m in obj.findall("metadata") if m.attrib.get("key") == key]
+                if existing:
+                    for m in existing:
+                        m.set("value", value)
+                    updated_keys.append(key)
+                else:
+                    # Metadata stays ahead of <part> children, matching Bambu Studio's layout.
+                    children = list(obj)
+                    insert_at = max(
+                        (i + 1 for i, c in enumerate(children) if c.tag == "metadata"),
+                        default=0,
+                    )
+                    new_meta = ET.Element("metadata", {"key": key, "value": value})
+                    obj.insert(insert_at, new_meta)
+                    created_keys.append(key)
+            updated_objects.append({
+                "object_id": obj.attrib.get("id", ""),
+                "object_name": metadata_map(obj).get("name", ""),
+                "created_keys": created_keys,
+                "updated_keys": updated_keys,
+            })
+
+        new_xml_bytes = b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="utf-8")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "Metadata/model_settings.config":
+                    continue
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr("Metadata/model_settings.config", new_xml_bytes)
+
+    shutil.move(str(tmp_path), str(dest))
+    return {
+        "success": True,
+        "input_3mf": str(src),
+        "output_3mf": str(dest),
+        "object_identifier": object_identifier,
+        "matched_by": matched_by,
+        "applied_settings": serialized,
+        "updated_objects": updated_objects,
+    }
+
+

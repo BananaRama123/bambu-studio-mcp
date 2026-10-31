@@ -202,6 +202,46 @@ def _write_png(path: Path, width: int, height: int, bgra_bytes: bytes) -> None:
     path.write_bytes(png_bytes)
 
 
+def _grab_window_bgra_fast(hwnd: int) -> Tuple[int, int, bytes]:
+    """Grab raw BGRA bytes of the window in ~3ms without disk I/O for instant before/after change detection."""
+    rect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+
+    hdc_screen = user32.GetDC(0)
+    hdc_mem = gdi32.CreateCompatibleDC(ctypes.c_size_t(hdc_screen))
+    hbmp = gdi32.CreateCompatibleBitmap(ctypes.c_size_t(hdc_screen), width, height)
+    old_obj = gdi32.SelectObject(ctypes.c_size_t(hdc_mem), ctypes.c_size_t(hbmp))
+
+    SRCCOPY = 0x00CC0020
+    gdi32.BitBlt(
+        ctypes.c_size_t(hdc_mem), 0, 0, width, height,
+        ctypes.c_size_t(hdc_screen), left, top, SRCCOPY
+    )
+
+    bmi = BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth = width
+    bmi.biHeight = -height
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bmi.biCompression = 0
+
+    buf = ctypes.create_string_buffer(width * height * 4)
+    gdi32.GetDIBits(
+        ctypes.c_size_t(hdc_mem), ctypes.c_size_t(hbmp),
+        0, height, buf, ctypes.byref(bmi), 0
+    )
+
+    gdi32.SelectObject(ctypes.c_size_t(hdc_mem), ctypes.c_size_t(old_obj))
+    gdi32.DeleteObject(ctypes.c_size_t(hbmp))
+    gdi32.DeleteDC(ctypes.c_size_t(hdc_mem))
+    user32.ReleaseDC(0, hdc_screen)
+    return width, height, buf.raw
+
+
 def capture_window_screenshot(hwnd: int, save_path: Path, focus_first: bool = True) -> Dict[str, Any]:
     """Capture Bambu Studio window screen region to a PNG file."""
     if focus_first:
@@ -283,6 +323,73 @@ def click_screen_coords(
     time.sleep(0.08)
 
 
+def send_key_shortcut(vk_code: int, ctrl: bool = False, shift: bool = False) -> None:
+    """Send a native Win32 keyboard shortcut to the focused Bambu Studio window."""
+    VK_CONTROL = 0x11
+    VK_SHIFT = 0x10
+    KEYEVENTF_KEYUP = 0x0002
+    if ctrl:
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+    if shift:
+        user32.keybd_event(VK_SHIFT, 0, 0, 0)
+    time.sleep(0.01)
+    user32.keybd_event(vk_code, 0, 0, 0)
+    time.sleep(0.03)
+    user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+    time.sleep(0.01)
+    if shift:
+        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
+    if ctrl:
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+    time.sleep(0.06)
+
+
+def _sample_lum(width: int, height: int, bgra: bytes, x: int, y: int) -> float:
+    """Return average RGB luminance (0..255) in a 5x5 patch around (x, y)."""
+    stride = width * 4
+    total = 0
+    cnt = 0
+    for dy in (-4, 0, 4):
+        for dx in (-4, 0, 4):
+            sx = max(0, min(width - 1, x + dx))
+            sy = max(0, min(height - 1, y + dy))
+            idx = sy * stride + sx * 4
+            total += (bgra[idx] + bgra[idx + 1] + bgra[idx + 2]) // 3
+            cnt += 1
+    return round(total / max(1, cnt), 1)
+
+
+def detect_canvas_plates(width: int, height: int, bgra_bytes: bytes) -> Dict[str, Any]:
+    """Check the luminance of the visible plates on the canvas (active plate is dark ~95, inactive is light ~212)."""
+    # Sample empty upper-left grid corners of each plate in Top View (away from centered 3D objects):
+    probe_points = {
+        1: (410, 395),
+        2: (670, 395),
+        3: (900, 395),
+        4: (410, 615),
+        5: (670, 615),
+        6: (900, 615),
+    }
+    plates = []
+    active_idx = None
+    for p_num, (px, py) in probe_points.items():
+        if px < width and py < height:
+            lum = _sample_lum(width, height, bgra_bytes, px, py)
+            is_active = 60.0 <= lum <= 145.0
+            if is_active and active_idx is None:
+                active_idx = p_num
+            plates.append({
+                "plate": p_num,
+                "probe_xy": (px, py),
+                "luminance": lum,
+                "is_selected": is_active,
+            })
+    return {
+        "active_selected_plate": active_idx,
+        "plates": plates,
+    }
+
+
 def find_gl_canvas_rect(main_win: Dict[str, Any], children: List[Dict[str, Any]]) -> Dict[str, int]:
     """Identify the 3D OpenGL canvas child window (largest child on the right side of the window)."""
     main_rect = main_win["rect"]
@@ -308,13 +415,17 @@ def control_bambu_gui(
 ) -> Dict[str, Any]:
     """Inspect or control the currently open Bambu Studio desktop GUI window, or invoke hot-reloaded AI pipelines."""
     raw_action = action.strip()
-    if raw_action.startswith(("cielab:", "search_models:", "audit_model:", "repair_mesh:")):
+    if raw_action.startswith(("cielab:", "search_models:", "audit_model:", "repair_mesh:", "claude:")):
         import importlib
         from . import ai_features as _af
+        from . import claude_worker as _cw
         from . import model_3mf as _m3
         importlib.reload(_af)
+        importlib.reload(_cw)
         importlib.reload(_m3)
         prefix, payload = raw_action.split(":", 1)
+        if prefix == "claude":
+            return _cw.delegate_to_claude(task_prompt=payload)
         if prefix == "cielab":
             colors = [c.strip() for c in payload.split(";") if c.strip()]
             return _af.match_ams_colors_cielab(target_colors=colors)
@@ -334,19 +445,150 @@ def control_bambu_gui(
 
     hwnd = main_win["hwnd"]
     act = action.lower().strip()
-    need_canvas = act in ("inspect", "add_object", "add_plate", "auto_orient", "auto_arrange", "variable_layer_height")
+    need_canvas = act in ("inspect", "self_test", "add_object", "add_plate", "auto_orient", "auto_arrange", "variable_layer_height")
     children = list_child_windows(hwnd) if need_canvas else []
     canvas_rect = find_gl_canvas_rect(main_win, children) if need_canvas else main_win["rect"]
 
-    clicked_at: Optional[Dict[str, int]] = None
+    clicked_at: Optional[Dict[str, Any]] = None
 
     bring_window_to_front(hwnd)
+    win_w, win_h, bgra_before = _grab_window_bgra_fast(hwnd)
+
+    if act == "self_test":
+        initial_plates = detect_canvas_plates(win_w, win_h, bgra_before)
+        steps_report = []
+
+        # Test 1: Probe candidate click points on Plate 2 until active_selected_plate == 2
+        p2_candidates = [
+            ("plate2_interior", (670, 395)),
+            ("plate2_object", (731, 445)),
+            ("plate2_badge_02", (842, 537)),
+            ("plate2_top_tab", (731, 350)),
+            ("plate2_settings_icon", (842, 422)),
+        ]
+        winning_p2 = None
+        plates_s1 = initial_plates
+        for label, (rx, ry) in p2_candidates:
+            click_screen_coords(main_win["rect"]["left"] + rx, main_win["rect"]["top"] + ry)
+            time.sleep(0.12)
+            _, _, bgra_s1 = _grab_window_bgra_fast(hwnd)
+            plates_s1 = detect_canvas_plates(win_w, win_h, bgra_s1)
+            if plates_s1.get("active_selected_plate") == 2:
+                winning_p2 = (label, (rx, ry))
+                break
+
+        steps_report.append({
+            "step": "1_select_plate_2",
+            "winning_candidate": winning_p2,
+            "plate_state_after": plates_s1,
+            "passed": plates_s1.get("active_selected_plate") == 2,
+        })
+
+        # Test 2: Switch back to Plate 1 and verify active_selected_plate == 1
+        p1_candidates = [
+            ("plate1_interior", (410, 395)),
+            ("plate1_object", (485, 445)),
+            ("plate1_badge_01", (594, 537)),
+        ]
+        winning_p1 = None
+        plates_s2 = plates_s1
+        for label, (rx, ry) in p1_candidates:
+            click_screen_coords(main_win["rect"]["left"] + rx, main_win["rect"]["top"] + ry)
+            time.sleep(0.12)
+            _, _, bgra_s2 = _grab_window_bgra_fast(hwnd)
+            plates_s2 = detect_canvas_plates(win_w, win_h, bgra_s2)
+            if plates_s2.get("active_selected_plate") == 1:
+                winning_p1 = (label, (rx, ry))
+                break
+
+        steps_report.append({
+            "step": "2_select_plate_1",
+            "winning_candidate": winning_p1,
+            "plate_state_after": plates_s2,
+            "passed": plates_s2.get("active_selected_plate") == 1,
+        })
+
+        return {
+            "found_window": True,
+            "action": "self_test",
+            "all_passed": all(s["passed"] for s in steps_report),
+            "initial_plate_scan": initial_plates,
+            "self_test_steps": steps_report,
+        }
 
     if act in ("undo", "remove_plate", "delete_empty_plates"):
         sx = main_win["rect"]["left"] + 207
         sy = main_win["rect"]["top"] + 18
         click_screen_coords(sx, sy)
         clicked_at = {"screen_x": sx, "screen_y": sy, "rel_x": 207, "rel_y": 18}
+
+    elif act.startswith("select_plate_"):
+        plate_num = int(act.split("_")[-1])
+        candidates_by_plate = {
+            1: [(410, 395), (472, 464)],
+            2: [(670, 395), (731, 464)],
+            3: [(900, 395), (910, 464)],
+            4: [(410, 615), (472, 703)],
+            5: [(670, 615), (731, 703)],
+            6: [(900, 615), (910, 703)],
+        }
+        cands = candidates_by_plate.get(plate_num, [(670, 395)])
+        for rx, ry in cands:
+            sx = main_win["rect"]["left"] + rx
+            sy = main_win["rect"]["top"] + ry
+            click_screen_coords(sx, sy)
+            _, _, bgra_try = _grab_window_bgra_fast(hwnd)
+            after_scan = detect_canvas_plates(win_w, win_h, bgra_try)
+            clicked_at = {
+                "plate": plate_num,
+                "screen_x": sx,
+                "screen_y": sy,
+                "rel_x": rx,
+                "rel_y": ry,
+                "active_selected_plate": after_scan.get("active_selected_plate"),
+                "plates_luminance": after_scan.get("plates"),
+            }
+            if after_scan.get("active_selected_plate") == plate_num:
+                break
+
+    elif act in ("sidebar_objects", "sidebar_global"):
+        rx = 185 if act == "sidebar_objects" else 132
+        ry = 497
+        sx = main_win["rect"]["left"] + rx
+        sy = main_win["rect"]["top"] + ry
+        click_screen_coords(sx, sy)
+        clicked_at = {"screen_x": sx, "screen_y": sy, "rel_x": rx, "rel_y": ry}
+
+    elif act in (
+        "view_iso", "view_bottom", "view_top", "view_front", "view_back", "view_left", "view_right",
+        "hotkey_arrange", "hotkey_slice", "hotkey_undo", "hotkey_redo", "hotkey_add_object",
+        "tool_move", "tool_scale", "tool_rotate", "tool_lay_on_face", "tool_cut", "tool_paint",
+    ):
+        # Group 1: Native Win32 Keyboard Shortcuts (100% resolution & camera independent)
+        # Focus the 3D canvas first if needed so single-key shortcuts go to GLCanvas3D
+        hotkey_map = {
+            "view_iso": (0x30, True, False),       # Ctrl+0
+            "view_bottom": (0x31, True, False),    # Ctrl+1
+            "view_top": (0x32, True, False),       # Ctrl+2
+            "view_front": (0x33, True, False),     # Ctrl+3
+            "view_back": (0x34, True, False),      # Ctrl+4
+            "view_left": (0x35, True, False),      # Ctrl+5
+            "view_right": (0x36, True, False),     # Ctrl+6
+            "hotkey_arrange": (0x41, False, False),     # A
+            "hotkey_slice": (0x52, True, False),        # Ctrl+R
+            "hotkey_undo": (0x5A, True, False),         # Ctrl+Z
+            "hotkey_redo": (0x59, True, False),         # Ctrl+Y
+            "hotkey_add_object": (0x49, True, False),   # Ctrl+I
+            "tool_move": (0x4D, False, False),          # M
+            "tool_scale": (0x53, False, False),         # S
+            "tool_rotate": (0x52, False, False),        # R
+            "tool_lay_on_face": (0x46, False, False),   # F
+            "tool_cut": (0x43, False, False),           # C
+            "tool_paint": (0x50, False, False),         # P
+        }
+        vk, use_ctrl, use_shift = hotkey_map[act]
+        send_key_shortcut(vk, ctrl=use_ctrl, shift=use_shift)
+        clicked_at = {"hotkey": act, "vk": hex(vk), "ctrl": use_ctrl, "shift": use_shift}
 
     elif act == "click_relative" and click_x_offset is not None and click_y_offset is not None:
         sx = main_win["rect"]["left"] + int(click_x_offset)
@@ -389,6 +631,9 @@ def control_bambu_gui(
         click_screen_coords(sx, sy)
         clicked_at = {"screen_x": sx, "screen_y": sy}
 
+    _, _, bgra_after = _grab_window_bgra_fast(hwnd)
+    visual_changed = bgra_before != bgra_after
+
     shot_info = None
     if act == "inspect" or screenshot_path:
         out_png = (
@@ -401,6 +646,7 @@ def control_bambu_gui(
     res: Dict[str, Any] = {
         "found_window": True,
         "action": act,
+        "visual_change_detected": visual_changed,
         "main_window": main_win,
         "gl_canvas_rect": canvas_rect,
         "clicked_at": clicked_at,
