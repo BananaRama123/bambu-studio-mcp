@@ -22,17 +22,22 @@ Bambu Studio is powerful, but its interface exposes 200+ dense, interconnected p
    - **`compare_bambu_profiles`**: Diffs any two profiles side-by-side (e.g., `0.20mm Standard` vs. `0.20mm Strength`).
    - **`create_custom_preset`**: Saves custom presets directly into your Bambu Studio `user` presets folder so they appear in your dropdowns.
 
-4. **3MF & STL Geometry Inspector & Project Optimizer**
-   - **`inspect_3d_model`**: Pure-Python `.stl` (binary & ASCII) and `.3mf` analyzer that calculates bounding box dimensions ($X \times Y \times Z$ in mm), volume ($\text{cm}^3$), surface area, bottom bed contact area, steep overhang area ($>35^\circ$), estimated PLA weight, and build-volume fit across Bambu printers.
+4. **3MF & STL Geometry Inspector, 11-Point Printability Audit & Auto-Repair**
+   - **`inspect_3d_model`**: Pure-Python `.stl` (binary & ASCII) and `.3mf` analyzer that calculates bounding box dimensions ($X \times Y \times Z$ in mm), volume ($\text{cm}^3$), surface area, bottom bed contact area, steep overhang area ($>35^\circ$), estimated PLA weight, build-volume fit, and an **11-Point Printability & Topology Audit** (`0–100` score covering watertight manifold check, non-manifold edges, degenerate faces, outward normals, floating mid-air shells, bed adhesion, tipping stability, overhang severity, bridge risk, scale sanity, and printer fit).
+   - **`repair_3d_mesh`**: Automatically repairs an `.stl` mesh—removes zero-area degenerate and duplicate triangles, flips inverted face normals if total signed volume is negative, and grounds the model flat onto $Z = 0.0\text{ mm}$.
    - **`optimize_3mf_project`**: Injects Smart Advisor recommendations or custom overrides directly into a `.3mf` file's `Metadata/project_settings.config` without opening the GUI.
    - **`add_plate_to_3mf`**: Programmatically adds a new empty build plate (`<plate>`) to any `.3mf` project file.
 
-5. **Headless CLI Slicing, Cost/Time Estimator & GUI Launcher**
+5. **Perceptual CIELAB ($\Delta E_{2000}$) AMS Color Matching & 3D Model Discovery**
+   - **`match_ams_colors`**: Converts target RGB/Hex colors into perceptual **CIELAB ($L^*, a^*, b^*$)** space and computes **CIEDE2000 ($\Delta E_{2000}$)** color distance against your `.3mf` project's loaded filaments (or the official Bambu Lab PLA Basic palette) to recommend the best AMS slot mapping.
+   - **`search_3d_models`**: Searches **MakerWorld**, **Printables**, and **Thangs** for ready-to-print 3D models with live download/like counts and direct URLs.
+
+6. **Headless CLI Slicing, Cost/Time Estimator & GUI Launcher**
    - **`slice_model_headless`**: Runs `bambu-studio` CLI headlessly (`--slice 0 --export-3mf`) with resolved printer/process/filament profiles and overrides.
    - **`parse_sliced_file_metrics`**: Extracts exact print time (`Xh Ym Zs`), filament weight (g), length (m), per-slot AMS usage, layer count, and estimated filament cost (`$`) from any `.gcode.3mf` or `.gcode` file.
    - **`open_in_bambu_studio`**: Opens any `.3mf` or `.stl` directly in the Bambu Studio desktop application.
 
-6. **Direct Live Printer & AMS Control (Local LAN MQTT-TLS)**
+7. **Direct Live Printer & AMS Control (Local LAN MQTT-TLS)**
    - **`get_live_printer_status`**: Zero-dependency native Python TLS MQTT 3.1.1 client connecting to port `8883` (`bblp` + LAN Access Code) to read live print progress, layer number, remaining time, nozzle/bed/chamber temperatures, HMS alerts, and loaded AMS slots (filament type, hex color, remaining %).
    - **`control_live_printer`**: Pause, resume, or stop prints, toggle the chamber light, or change print speed (`Silent`, `Standard`, `Sport`, `Ludicrous`).
 
@@ -76,7 +81,7 @@ Then add to your MCP client configuration (`~/.gemini/config/mcp_config.json`, C
 
 ---
 
-## Available MCP Tools (17 Tools)
+## Available MCP Tools (20 Tools)
 
 | Tool Name | Purpose |
 | :--- | :--- |
@@ -84,12 +89,15 @@ Then add to your MCP client configuration (`~/.gemini/config/mcp_config.json`, C
 | `smart_slicing_advisor` | Convert a plain-English goal + filament + nozzle size into Bambu Studio overrides & GUI walkthrough |
 | `explain_bambu_setting` | Search the Bambu Studio Settings Encyclopedia by JSON key, GUI label, or keyword |
 | `diagnose_print_defect` | Diagnose print defects/failures (scraping, warping, stringing, fused supports, tight holes) |
-| `control_bambu_studio_gui` | Control or inspect the live open Bambu Studio desktop window (`add_plate`, `slice_plate`, `auto_orient`, etc.) |
+| `control_bambu_studio_gui` | Control or inspect the live open Bambu Studio desktop window (`add_plate`, `remove_plate`, `slice_plate`, `auto_orient`, etc.) |
 | `list_bambu_profiles` | Search discovered `machine`, `filament`, and `process` profiles across all printers |
 | `inspect_bambu_profile` | Resolve the full `inherits` chain of any profile and inspect its settings |
 | `compare_bambu_profiles` | Compare two profiles side-by-side and return all differing keys |
 | `create_custom_preset` | Create and save a custom user preset into Bambu Studio's user folder |
-| `inspect_3d_model` | Analyze `.stl` / `.3mf` geometry, volume, overhangs, bed stability, and printer fit |
+| `inspect_3d_model` | Analyze `.stl` / `.3mf` geometry, volume, overhangs, 11-point printability audit, and printer fit |
+| `repair_3d_mesh` | Auto-repair an `.stl` mesh (remove degenerate/duplicate faces, fix inverted normals, ground onto $Z=0$) |
+| `match_ams_colors` | Perceptual CIELAB ($\Delta E_{2000}$) color matching between target RGB/Hex colors and AMS spools |
+| `search_3d_models` | Search MakerWorld, Printables, and Thangs for ready-to-print 3D models |
 | `optimize_3mf_project` | Inject Smart Advisor settings directly into a `.3mf` project file |
 | `add_plate_to_3mf` | Add a new empty build plate (`<plate>`) to a `.3mf` project file |
 | `slice_model_headless` | Slice a `.3mf` or `.stl` via headless Bambu Studio CLI and return time/weight/cost |
@@ -97,3 +105,14 @@ Then add to your MCP client configuration (`~/.gemini/config/mcp_config.json`, C
 | `open_in_bambu_studio` | Launch Bambu Studio GUI with a `.3mf` or `.stl` file loaded |
 | `get_live_printer_status` | Query live printer progress, temps, HMS alerts, and AMS filament trays over LAN MQTT |
 | `control_live_printer` | Pause, resume, stop, toggle light, or change speed level on a live printer |
+
+---
+
+## Acknowledgments & Upstream Credits
+
+Special thanks to the open-source projects and authors whose work inspired key capabilities in `bambu-studio-mcp`:
+
+- **[`heyixuan2/bambu-studio-ai`](https://github.com/heyixuan2/bambu-studio-ai)** by **[@heyixuan2](https://github.com/heyixuan2)** — Inspired the **11-Point Printability Audit**, **perceptual CIELAB ($\Delta E$) nearest-neighbor AMS color mapping**, **automated mesh repair**, and **MakerWorld / Printables model discovery** pipelines.
+- **[`mikedh/trimesh`](https://github.com/mikedh/trimesh)** by **[@mikedh](https://github.com/mikedh)** (Michael Dawson-Haggerty et al.) — Upstream reference for 3D triangle mesh topology verification, watertight manifold checks, and mesh repair conventions used by `bambu-studio-ai`.
+- **[`BambuTools/bambulabs_api`](https://github.com/BambuTools/bambulabs_api)** — Upstream reference for Bambu Lab LAN MQTT telemetry and AMS tray schemas.
+- **[`bambulab/BambuStudio`](https://github.com/bambulab/BambuStudio)** — Bambu Lab's open-source slicer engine, profile inheritance architecture, and 3MF project format.

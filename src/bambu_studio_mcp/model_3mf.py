@@ -1,4 +1,9 @@
-"""3MF and STL Geometry Inspector, Overhang Analyzer, and Bambu Project Modifier."""
+"""3MF and STL Geometry Inspector, 11-Point Printability Analyzer, and Bambu Project Modifier.
+
+11-Point Printability Analysis inspired by:
+- heyixuan2/bambu-studio-ai (https://github.com/heyixuan2/bambu-studio-ai)
+- mikedh/trimesh (https://github.com/mikedh/trimesh)
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,189 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 Vec3 = Tuple[float, float, float]
+
+
+def _compute_11_point_printability(
+    triangles: List[Tuple[Vec3, Vec3, Vec3]],
+    size_xyz_mm: Tuple[float, float, float],
+    min_z: float,
+    total_signed_vol: float,
+    bottom_contact_mm2: float,
+    overhang_area_mm2: float,
+) -> Dict[str, Any]:
+    """Run an 11-point mesh topology & printability audit inspired by heyixuan2/bambu-studio-ai and trimesh."""
+    sx, sy, sz = size_xyz_mm
+    tri_count = len(triangles)
+
+    # Quantize vertices to 0.001 mm for topological edge/shell analysis
+    # Cap full topology graph at 120,000 triangles to keep pure-Python latency < 0.4s
+    topology_analyzed = tri_count <= 120000 and tri_count > 0
+    edge_counts: Dict[Tuple[int, int], int] = {}
+    vert_map: Dict[Tuple[int, int, int], int] = {}
+    parent: List[int] = []
+    vert_min_z: List[float] = []
+
+    def find_root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    degenerate_triangles = 0
+    bridge_area_mm2 = 0.0
+    severe_overhang_mm2 = 0.0
+    severe_nz_threshold = -math.cos(math.radians(25.0))  # <25 deg from horizontal (>65 deg from vertical)
+
+    for v0, v1, v2 in triangles:
+        area, _, nz = _triangle_metrics(v0, v1, v2)
+        if area < 1e-7:
+            degenerate_triangles += 1
+        avg_z = (v0[2] + v1[2] + v2[2]) / 3.0
+        if avg_z > min_z + 1.0:
+            if nz < -0.95:
+                bridge_area_mm2 += area
+            elif nz < severe_nz_threshold:
+                severe_overhang_mm2 += area
+
+        if topology_analyzed:
+            idxs = []
+            for vx, vy, vz in (v0, v1, v2):
+                key = (int(round(vx * 1000)), int(round(vy * 1000)), int(round(vz * 1000)))
+                idx = vert_map.get(key)
+                if idx is None:
+                    idx = len(parent)
+                    vert_map[key] = idx
+                    parent.append(idx)
+                    vert_min_z.append(vz)
+                idxs.append(idx)
+
+            i0, i1, i2 = idxs
+            # Union connected vertices for shell / island detection
+            r0, r1, r2 = find_root(i0), find_root(i1), find_root(i2)
+            if r0 != r1:
+                parent[r1] = r0
+                vert_min_z[r0] = min(vert_min_z[r0], vert_min_z[r1])
+            r0 = find_root(i0)
+            if r0 != r2:
+                parent[r2] = r0
+                vert_min_z[r0] = min(vert_min_z[r0], vert_min_z[r2])
+
+            for a, b in ((i0, i1), (i1, i2), (i2, i0)):
+                if a != b:
+                    e = (a, b) if a < b else (b, a)
+                    edge_counts[e] = edge_counts.get(e, 0) + 1
+
+    boundary_edges = 0
+    non_manifold_edges = 0
+    shell_count = 1
+    floating_islands = 0
+
+    if topology_analyzed:
+        for count in edge_counts.values():
+            if count == 1:
+                boundary_edges += 1
+            elif count > 2:
+                non_manifold_edges += 1
+
+        roots: Dict[int, float] = {}
+        for idx in range(len(parent)):
+            r = find_root(idx)
+            if r not in roots:
+                roots[r] = vert_min_z[r]
+            else:
+                roots[r] = min(roots[r], vert_min_z[r])
+        shell_count = len(roots)
+        floating_islands = sum(1 for z_low in roots.values() if z_low > min_z + 0.6)
+
+    is_watertight = topology_analyzed and boundary_edges == 0 and non_manifold_edges == 0
+    normals_outward = total_signed_vol >= 0.0
+    max_dim = max(sx, sy, sz)
+    min_dim = min(sx, sy, sz)
+    unit_scale_ok = 2.0 <= max_dim <= 350.0
+    aspect_ratio = sz / max(1.0, min(sx, sy))
+    stability_ok = aspect_ratio <= 2.5 and (bottom_contact_mm2 >= 100.0 or sz <= 25.0)
+    fits_standard_256 = sx <= 256.0 and sy <= 256.0 and sz <= 256.0
+
+    # Calculate 0-100 Printability Score
+    score = 100
+    if topology_analyzed and not is_watertight:
+        score -= 12
+    if non_manifold_edges > 0:
+        score -= 10
+    if degenerate_triangles > 0:
+        score -= 5
+    if not normals_outward:
+        score -= 15
+    if floating_islands > 0:
+        score -= 20
+    if not stability_ok:
+        score -= 12
+    if severe_overhang_mm2 > 25.0:
+        score -= 10
+    if bridge_area_mm2 > 50.0:
+        score -= 8
+    if not unit_scale_ok:
+        score -= 15
+    score = max(0, min(100, score))
+
+    return {
+        "printability_score_100": score,
+        "credits": "11-point audit inspired by heyixuan2/bambu-studio-ai & mikedh/trimesh",
+        "checks": {
+            "1_watertight_manifold": {
+                "passed": is_watertight if topology_analyzed else None,
+                "open_boundary_edges": boundary_edges if topology_analyzed else "skipped (>120k tris)",
+            },
+            "2_non_manifold_edges": {
+                "passed": (non_manifold_edges == 0) if topology_analyzed else None,
+                "non_manifold_edge_count": non_manifold_edges if topology_analyzed else "skipped (>120k tris)",
+            },
+            "3_degenerate_triangles": {
+                "passed": degenerate_triangles == 0,
+                "zero_area_triangle_count": degenerate_triangles,
+            },
+            "4_outward_face_normals": {
+                "passed": normals_outward,
+                "signed_volume_mm3": round(total_signed_vol, 2),
+            },
+            "5_disconnected_shells_and_floating_islands": {
+                "passed": floating_islands == 0,
+                "shell_count": shell_count if topology_analyzed else "skipped",
+                "floating_midair_shells": floating_islands if topology_analyzed else "skipped",
+            },
+            "6_bed_adhesion_contact_area": {
+                "passed": bottom_contact_mm2 >= 100.0 or sz <= 20.0,
+                "bottom_contact_mm2": round(bottom_contact_mm2, 1),
+            },
+            "7_tipping_stability_aspect_ratio": {
+                "passed": stability_ok,
+                "height_to_base_ratio": round(aspect_ratio, 2),
+            },
+            "8_overhang_severity": {
+                "passed": severe_overhang_mm2 <= 25.0,
+                "overhang_over_35deg_mm2": round(overhang_area_mm2, 1),
+                "severe_overhang_over_65deg_mm2": round(severe_overhang_mm2, 1),
+            },
+            "9_horizontal_bridge_risk": {
+                "passed": bridge_area_mm2 <= 50.0,
+                "elevated_flat_downward_area_mm2": round(bridge_area_mm2, 1),
+            },
+            "10_unit_and_scale_sanity": {
+                "passed": unit_scale_ok,
+                "max_dimension_mm": round(max_dim, 2),
+                "min_dimension_mm": round(min_dim, 2),
+                "warning": (
+                    "Model looks tiny (<2mm) — check if exported in inches/meters!"
+                    if max_dim < 2.0
+                    else ("Model exceeds 350mm — may require splitting/cutting!" if max_dim > 350.0 else None)
+                ),
+            },
+            "11_standard_build_volume_fit": {
+                "passed": fits_standard_256,
+                "fits_256x256x256_mm": fits_standard_256,
+            },
+        },
+    }
 
 
 def _triangle_metrics(
@@ -115,8 +303,10 @@ def analyze_stl(file_path: Path) -> Dict[str, Any]:
                     min_y, max_y = min(min_y, vy), max(max_y, vy)
                     min_z, max_z = min(min_z, vz), max(max_z, vz)
         tri_count = len(verts) // 3
+        triangles = []
         for i in range(0, tri_count * 3, 3):
             v0, v1, v2 = verts[i], verts[i + 1], verts[i + 2]
+            triangles.append((v0, v1, v2))
             area, svol, nz = _triangle_metrics(v0, v1, v2)
             total_area += area
             total_signed_vol += svol
@@ -131,6 +321,14 @@ def analyze_stl(file_path: Path) -> Dict[str, Any]:
     size_z = max(0.0, max_z - min_z)
     vol_cm3 = abs(total_signed_vol) / 1000.0
     area_cm2 = total_area / 100.0
+    printability = _compute_11_point_printability(
+        triangles=triangles,
+        size_xyz_mm=(size_x, size_y, size_z),
+        min_z=0.0 if min_z == float("inf") else min_z,
+        total_signed_vol=total_signed_vol,
+        bottom_contact_mm2=bottom_contact_area,
+        overhang_area_mm2=overhang_area,
+    )
 
     return _build_geometry_summary(
         file_path=file_path,
@@ -141,6 +339,7 @@ def analyze_stl(file_path: Path) -> Dict[str, Any]:
         surface_area_cm2=area_cm2,
         bottom_contact_mm2=bottom_contact_area,
         overhang_area_mm2=overhang_area,
+        printability_11_point=printability,
     )
 
 
@@ -154,6 +353,7 @@ def _build_geometry_summary(
     bottom_contact_mm2: float,
     overhang_area_mm2: float,
     extra_metadata: Optional[Dict[str, Any]] = None,
+    printability_11_point: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     sx, sy, sz = size_xyz_mm
     footprint_xy = max(1.0, sx * sy)
@@ -177,6 +377,21 @@ def _build_geometry_summary(
         recommendations.append(
             f"High height-to-base ratio ({round(aspect_ratio_height_to_base, 1)}x) or small bed contact area ({round(bottom_contact_mm2, 1)} mm²). Enable a 5-8mm outer brim and use Gyroid infill so the print won't get knocked over."
         )
+
+    if printability_11_point:
+        checks = printability_11_point.get("checks", {})
+        if checks.get("1_watertight_manifold", {}).get("passed") is False:
+            recommendations.append(
+                f"Mesh is non-watertight ({checks['1_watertight_manifold'].get('open_boundary_edges')} open boundary edges). Run 'repair_3d_mesh' or Bambu Studio's Fix Model tool."
+            )
+        if checks.get("4_outward_face_normals", {}).get("passed") is False:
+            recommendations.append(
+                "Mesh has inverted face normals (negative signed volume). Run 'repair_3d_mesh' to flip triangle winding."
+            )
+        if checks.get("5_disconnected_shells_and_floating_islands", {}).get("passed") is False:
+            recommendations.append(
+                f"Detected {checks['5_disconnected_shells_and_floating_islands'].get('floating_midair_shells')} floating mid-air mesh shell(s)! Use 'Split to Objects' or enable supports."
+            )
 
     printer_compatibility = {
         "fits_A1_mini_180x180x180": sx <= 180 and sy <= 180 and sz <= 180,
@@ -204,6 +419,8 @@ def _build_geometry_summary(
         "printer_build_volume_fit": printer_compatibility,
         "smart_geometry_recommendations": recommendations,
     }
+    if printability_11_point:
+        res["printability_11_point_audit"] = printability_11_point
     if extra_metadata:
         res["bambu_3mf_metadata"] = extra_metadata
     return res
@@ -343,6 +560,14 @@ def analyze_3mf(file_path: Path) -> Dict[str, Any]:
     sx = 0.0 if min_x == float("inf") else (max_x - min_x)
     sy = 0.0 if min_y == float("inf") else (max_y - min_y)
     sz = 0.0 if min_z == float("inf") else (max_z - min_z)
+    printability = _compute_11_point_printability(
+        triangles=all_triangles,
+        size_xyz_mm=(sx, sy, sz),
+        min_z=0.0 if min_z == float("inf") else min_z,
+        total_signed_vol=total_signed_vol,
+        bottom_contact_mm2=bottom_contact_area,
+        overhang_area_mm2=overhang_area,
+    )
 
     return _build_geometry_summary(
         file_path=file_path,
@@ -354,6 +579,7 @@ def analyze_3mf(file_path: Path) -> Dict[str, Any]:
         bottom_contact_mm2=bottom_contact_area,
         overhang_area_mm2=overhang_area,
         extra_metadata=bambu_meta,
+        printability_11_point=printability,
     )
 
 

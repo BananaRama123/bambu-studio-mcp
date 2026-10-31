@@ -11,6 +11,11 @@ import json
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
+from .ai_features import (
+    match_ams_colors_cielab,
+    repair_and_ground_stl,
+    search_3d_models as _search_3d_models,
+)
 from .cli_slicer import (
     open_in_bambu_studio_gui,
     parse_sliced_metadata,
@@ -166,8 +171,11 @@ def create_custom_preset(
 
 
 def inspect_3d_model(file_path: str) -> Dict[str, Any]:
-    """Inspect a .stl or .3mf 3D model for dimensions (mm), volume (cm³), overhang area needing supports, bed contact stability, printer fit, and embedded Bambu 3MF metadata."""
-    return _inspect_3d_model(file_path)
+    """Inspect a .stl or .3mf 3D model for dimensions (mm), volume (cm³), 11-point printability audit (watertight, manifold, normals, floating shells, stability), overhang area, printer fit, and embedded Bambu 3MF metadata."""
+    import importlib
+    from . import model_3mf as _m3
+    importlib.reload(_m3)
+    return _m3.inspect_3d_model(file_path)
 
 
 def optimize_3mf_project(
@@ -320,6 +328,41 @@ def control_live_printer(
     )
 
 
+def match_ams_colors(
+    target_colors: List[str],
+    project_3mf_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Match target RGB/Hex colors to the closest AMS filament spools using perceptual CIELAB (Delta E 2000) color distance (inspired by heyixuan2/bambu-studio-ai)."""
+    return match_ams_colors_cielab(
+        target_colors=target_colors,
+        project_3mf_path=project_3mf_path,
+    )
+
+
+def repair_3d_mesh(
+    input_stl_path: str,
+    output_stl_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Auto-repair an STL mesh: remove degenerate/duplicate triangles, fix inverted face normals, and ground the model flat onto Z=0.0 mm (inspired by heyixuan2/bambu-studio-ai & trimesh)."""
+    return repair_and_ground_stl(
+        input_stl_path=input_stl_path,
+        output_stl_path=output_stl_path,
+    )
+
+
+def search_3d_models(
+    query: str,
+    platform: str = "all",
+    max_results: int = 8,
+) -> Dict[str, Any]:
+    """Search MakerWorld, Printables, and Thangs for ready-to-print 3D models matching a query (inspired by heyixuan2/bambu-studio-ai)."""
+    return _search_3d_models(
+        query=query,
+        platform=platform,
+        max_results=max_results,
+    )
+
+
 ALL_TOOLS: List[Callable[..., Any]] = [
     bambu_environment_info,
     explain_bambu_setting,
@@ -338,6 +381,9 @@ ALL_TOOLS: List[Callable[..., Any]] = [
     control_bambu_studio_gui,
     get_live_printer_status,
     control_live_printer,
+    match_ams_colors,
+    repair_3d_mesh,
+    search_3d_models,
 ]
 
 

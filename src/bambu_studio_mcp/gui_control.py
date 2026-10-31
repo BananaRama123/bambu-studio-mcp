@@ -53,7 +53,7 @@ def bring_window_to_front(hwnd: int) -> None:
     SW_RESTORE = 9
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
-        time.sleep(0.15)
+        time.sleep(0.05)
     HWND_TOPMOST = ctypes.c_size_t(-1).value
     HWND_NOTOPMOST = ctypes.c_size_t(-2).value
     SWP_NOMOVE = 0x0002
@@ -62,9 +62,8 @@ def bring_window_to_front(hwnd: int) -> None:
     flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
     user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
     user32.SetForegroundWindow(hwnd)
-    time.sleep(0.1)
     user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
-    time.sleep(0.15)
+    time.sleep(0.03)
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -178,25 +177,21 @@ def list_child_windows(parent_hwnd: int) -> List[Dict[str, Any]]:
 
 
 def _write_png(path: Path, width: int, height: int, bgra_bytes: bytes) -> None:
-    """Encode raw BGRA buffer (top-down) into a standard RGB PNG file using pure Python zlib."""
-    raw_rows = bytearray()
+    """Encode raw BGRA buffer (top-down) into an RGBA PNG file using slice-vectorized pure Python."""
+    rgba = bytearray(bgra_bytes)
+    rgba[0::4], rgba[2::4] = bgra_bytes[2::4], bgra_bytes[0::4]
+    rgba[3::4] = b"\xff" * (width * height)
+    mv = memoryview(rgba)
     stride = width * 4
-    for y in range(height):
-        raw_rows.append(0)
-        row_start = y * stride
-        for x in range(width):
-            px = row_start + x * 4
-            b = bgra_bytes[px]
-            g = bgra_bytes[px + 1]
-            r = bgra_bytes[px + 2]
-            raw_rows.extend((r, g, b))
+    raw_rows = b"\x00" + b"\x00".join(mv[y * stride : (y + 1) * stride] for y in range(height))
 
     def make_chunk(chunk_type: bytes, data: bytes) -> bytes:
         crc = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
         return struct.pack("!I", len(data)) + chunk_type + data + struct.pack("!I", crc)
 
-    ihdr = struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    idat = zlib.compress(bytes(raw_rows), level=6)
+    # Color type 6 = RGBA (8 bits per channel)
+    ihdr = struct.pack("!IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    idat = zlib.compress(raw_rows, level=1)
     png_bytes = (
         b"\x89PNG\r\n\x1a\n"
         + make_chunk(b"IHDR", ihdr)
@@ -207,9 +202,10 @@ def _write_png(path: Path, width: int, height: int, bgra_bytes: bytes) -> None:
     path.write_bytes(png_bytes)
 
 
-def capture_window_screenshot(hwnd: int, save_path: Path) -> Dict[str, Any]:
-    """Bring Bambu Studio window to front and capture its screen region to a PNG file."""
-    bring_window_to_front(hwnd)
+def capture_window_screenshot(hwnd: int, save_path: Path, focus_first: bool = True) -> Dict[str, Any]:
+    """Capture Bambu Studio window screen region to a PNG file."""
+    if focus_first:
+        bring_window_to_front(hwnd)
 
     rect = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -255,27 +251,36 @@ def capture_window_screenshot(hwnd: int, save_path: Path) -> Dict[str, Any]:
     }
 
 
+def move_cursor_exact(screen_x: int, screen_y: int) -> Tuple[int, int]:
+    """Move cursor across multi-DPI monitors reliably by calling SetCursorPos until GetCursorPos matches."""
+    target_x, target_y = int(screen_x), int(screen_y)
+    pt = wintypes.POINT()
+    for _ in range(4):
+        user32.SetCursorPos(target_x, target_y)
+        user32.GetCursorPos(ctypes.byref(pt))
+        if abs(pt.x - target_x) <= 1 and abs(pt.y - target_y) <= 1:
+            break
+        time.sleep(0.01)
+    return pt.x, pt.y
+
+
 def click_screen_coords(
     screen_x: int,
     screen_y: int,
     activate_point: Optional[ tuple[int, int] ] = None,
 ) -> None:
-    """Move cursor to (screen_x, screen_y) and perform a left mouse click."""
+    """Move cursor to exact (screen_x, screen_y), allow OpenGL hover picking frame to update, and click."""
+    MOUSEEVENTF_MOVE = 0x0001
     MOUSEEVENTF_LEFTDOWN = 0x0002
     MOUSEEVENTF_LEFTUP = 0x0004
-    if activate_point is not None:
-        user32.SetCursorPos(int(activate_point[0]), int(activate_point[1]))
-        time.sleep(0.06)
-        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.05)
-        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.12)
-    user32.SetCursorPos(int(screen_x), int(screen_y))
-    time.sleep(0.12)
+    move_cursor_exact(int(screen_x) - 1, int(screen_y))
+    user32.mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0)
+    time.sleep(0.05)
+    move_cursor_exact(int(screen_x), int(screen_y))
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
+    time.sleep(0.03)
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    time.sleep(0.35)
+    time.sleep(0.08)
 
 
 def find_gl_canvas_rect(main_win: Dict[str, Any], children: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -301,7 +306,25 @@ def control_bambu_gui(
     click_y_offset: Optional[int] = None,
     screenshot_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Inspect or control the currently open Bambu Studio desktop GUI window."""
+    """Inspect or control the currently open Bambu Studio desktop GUI window, or invoke hot-reloaded AI pipelines."""
+    raw_action = action.strip()
+    if raw_action.startswith(("cielab:", "search_models:", "audit_model:", "repair_mesh:")):
+        import importlib
+        from . import ai_features as _af
+        from . import model_3mf as _m3
+        importlib.reload(_af)
+        importlib.reload(_m3)
+        prefix, payload = raw_action.split(":", 1)
+        if prefix == "cielab":
+            colors = [c.strip() for c in payload.split(";") if c.strip()]
+            return _af.match_ams_colors_cielab(target_colors=colors)
+        if prefix == "search_models":
+            return _af.search_3d_models(query=payload)
+        if prefix == "audit_model":
+            return _m3.inspect_3d_model(file_path=payload)
+        if prefix == "repair_mesh":
+            return _af.repair_and_ground_stl(input_stl_path=payload)
+
     main_win = find_bambu_main_window()
     if not main_win:
         return {
@@ -310,21 +333,22 @@ def control_bambu_gui(
         }
 
     hwnd = main_win["hwnd"]
-    children = list_child_windows(hwnd)
-    canvas_rect = find_gl_canvas_rect(main_win, children)
-
-    out_png = (
-        Path(screenshot_path)
-        if screenshot_path
-        else Path(__file__).resolve().parent.parent.parent / "examples" / "bambu_gui_state.png"
-    )
-
     act = action.lower().strip()
+    need_canvas = act in ("inspect", "add_object", "add_plate", "auto_orient", "auto_arrange", "variable_layer_height")
+    children = list_child_windows(hwnd) if need_canvas else []
+    canvas_rect = find_gl_canvas_rect(main_win, children) if need_canvas else main_win["rect"]
+
     clicked_at: Optional[Dict[str, int]] = None
 
     bring_window_to_front(hwnd)
 
-    if act == "click_relative" and click_x_offset is not None and click_y_offset is not None:
+    if act in ("undo", "remove_plate", "delete_empty_plates"):
+        sx = main_win["rect"]["left"] + 207
+        sy = main_win["rect"]["top"] + 18
+        click_screen_coords(sx, sy)
+        clicked_at = {"screen_x": sx, "screen_y": sy, "rel_x": 207, "rel_y": 18}
+
+    elif act == "click_relative" and click_x_offset is not None and click_y_offset is not None:
         sx = main_win["rect"]["left"] + int(click_x_offset)
         sy = main_win["rect"]["top"] + int(click_y_offset)
         click_screen_coords(sx, sy)
@@ -341,9 +365,7 @@ def control_bambu_gui(
         dx, dy = icon_offsets[act]
         sx = canvas_rect["left"] + dx
         sy = canvas_rect["top"] + dy
-        titlebar_pt = (main_win["rect"]["left"] + 450, main_win["rect"]["top"] + 15)
-        click_screen_coords(sx, sy, activate_point=titlebar_pt)
-        time.sleep(0.35)
+        click_screen_coords(sx, sy)
         clicked_at = {
             "screen_x": sx,
             "screen_y": sy,
@@ -352,7 +374,6 @@ def control_bambu_gui(
         }
 
     elif act in ("slice_plate", "tab_prepare", "tab_preview", "tab_device", "tab_project"):
-        titlebar_pt = (main_win["rect"]["left"] + 450, main_win["rect"]["top"] + 15)
         if act == "slice_plate":
             sx = main_win["rect"]["right"] - 205
             sy = main_win["rect"]["top"] + 56
@@ -365,18 +386,27 @@ def control_bambu_gui(
             }[act]
             sx = main_win["rect"]["left"] + tab_x
             sy = main_win["rect"]["top"] + 56
-        click_screen_coords(sx, sy, activate_point=titlebar_pt)
-        time.sleep(0.35)
+        click_screen_coords(sx, sy)
         clicked_at = {"screen_x": sx, "screen_y": sy}
 
-    shot_info = capture_window_screenshot(hwnd, out_png)
-    return {
+    shot_info = None
+    if act == "inspect" or screenshot_path:
+        out_png = (
+            Path(screenshot_path)
+            if screenshot_path
+            else Path(__file__).resolve().parent.parent.parent / "examples" / "bambu_gui_state.png"
+        )
+        shot_info = capture_window_screenshot(hwnd, out_png, focus_first=False)
+
+    res: Dict[str, Any] = {
         "found_window": True,
         "action": act,
         "main_window": main_win,
         "gl_canvas_rect": canvas_rect,
-        "child_window_count": len(children),
-        "children_sample": children[:25],
         "clicked_at": clicked_at,
         "screenshot": shot_info,
     }
+    if act == "inspect":
+        res["child_window_count"] = len(children)
+        res["children_sample"] = children[:25]
+    return res
