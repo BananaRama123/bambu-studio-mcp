@@ -1,0 +1,14 @@
+{
+  "name": "bambu-studio",
+  "displayName": "Bambu Studio MCP & 3D Printing Co-Pilot",
+  "version": "0.1.0",
+  "description": "Smart Bambu Studio MCP server: translates plain-English goals into optimal slicer settings, inspects 3MF/STL geometry, runs headless CLI slicing, controls the desktop GUI, and connects to live Bambu Lab printers & AMS units.",
+  "author": {
+    "name": "Bambu Studio MCP Contributors"
+  },
+  "suggestedPrompts": [
+    "Add a new empty plate to my open Bambu Studio window",
+    "Recommend optimal settings for a strong functional bracket in PETG",
+    "Inspect my 3MF/STL model for overhangs, dimensions, and support needs"
+  ]
+}

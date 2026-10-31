@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "bambu-studio": {
+      "command": "python",
+      "args": [
+        "-u",
+        "-m",
+        "bambu_studio_mcp.server"
+      ],
+      "env": {
+        "PYTHONPATH": "src"
+      }
+    }
+  }
+}

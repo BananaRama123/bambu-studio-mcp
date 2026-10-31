@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bambu-studio-mcp"
+version = "0.1.0"
+description = "Comprehensive Model Context Protocol (MCP) server for Bambu Studio: smart slicing advisor, 100% printer-agnostic profile management, 3MF/STL geometry analysis, headless CLI slicing, live desktop GUI automation, and live printer/AMS control."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "BananaRama123" }
+]
+keywords = ["mcp", "bambu-studio", "bambu-lab", "3d-printing", "slicer", "3mf", "stl", "gcode"]
+dependencies = [
+    "mcp>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/BananaRama123/bambu-studio-mcp"
+Repository = "https://github.com/BananaRama123/bambu-studio-mcp"
+Issues = "https://github.com/BananaRama123/bambu-studio-mcp/issues"
+
+[project.optional-dependencies]
+full = [
+    "trimesh>=4.0.0",
+    "numpy>=1.24.0",
+    "paho-mqtt>=2.0.0",
+]
+
+[project.scripts]
+bambu-studio-mcp = "bambu_studio_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

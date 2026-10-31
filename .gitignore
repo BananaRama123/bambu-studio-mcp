@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local test artifacts & screenshots
+examples/bambu_gui_state.png
+tests/add_plate_now.py
+.agents/plugins/bambu-gui/
+result.json
+*.gcode
+*.gcode.3mf
+*.3mf.tmp
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
