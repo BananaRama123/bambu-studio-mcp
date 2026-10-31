@@ -53,17 +53,18 @@ def bring_window_to_front(hwnd: int) -> None:
     SW_RESTORE = 9
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
-        time.sleep(0.05)
+        time.sleep(0.10)
+    # Unlock Windows ForegroundLockTimeout by tapping a harmless modifier state
+    user32.keybd_event(0x12, 0, 0, 0)
+    user32.keybd_event(0x12, 0, 2, 0)
     HWND_TOPMOST = ctypes.c_size_t(-1).value
-    HWND_NOTOPMOST = ctypes.c_size_t(-2).value
     SWP_NOMOVE = 0x0002
     SWP_NOSIZE = 0x0001
     SWP_SHOWWINDOW = 0x0040
     flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
     user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
     user32.SetForegroundWindow(hwnd)
-    user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
-    time.sleep(0.03)
+    time.sleep(0.08)
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -103,6 +104,9 @@ def find_bambu_main_window() -> Optional[Dict[str, Any]]:
                         # Close open Preferences modal so the main 3D plater window is accessible
                         user32.PostMessageW(hwnd, 0x0010, 0, 0)
                         return True
+                    if user32.IsIconic(hwnd) and "bambustudio" in title.lower():
+                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        time.sleep(0.15)
                     rect = wintypes.RECT()
                     user32.GetWindowRect(hwnd, ctypes.byref(rect))
                     w = rect.right - rect.left
@@ -234,6 +238,13 @@ def _grab_window_bgra_fast(hwnd: int) -> Tuple[int, int, bytes]:
         ctypes.c_size_t(hdc_mem), ctypes.c_size_t(hbmp),
         0, height, buf, ctypes.byref(bmi), 0
     )
+    mid = (width * height * 2)
+    if not any(buf.raw[mid : mid + 4000]):
+        user32.PrintWindow(ctypes.c_size_t(hwnd), ctypes.c_size_t(hdc_mem), 2)
+        gdi32.GetDIBits(
+            ctypes.c_size_t(hdc_mem), ctypes.c_size_t(hbmp),
+            0, height, buf, ctypes.byref(bmi), 0
+        )
 
     gdi32.SelectObject(ctypes.c_size_t(hdc_mem), ctypes.c_size_t(old_obj))
     gdi32.DeleteObject(ctypes.c_size_t(hbmp))
@@ -250,41 +261,8 @@ def capture_window_screenshot(hwnd: int, save_path: Path, focus_first: bool = Tr
     rect = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
     left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-
-    hdc_screen = user32.GetDC(0)
-    hdc_mem = gdi32.CreateCompatibleDC(ctypes.c_size_t(hdc_screen))
-    hbmp = gdi32.CreateCompatibleBitmap(ctypes.c_size_t(hdc_screen), width, height)
-    old_obj = gdi32.SelectObject(ctypes.c_size_t(hdc_mem), ctypes.c_size_t(hbmp))
-
-    SRCCOPY = 0x00CC0020
-    gdi32.BitBlt(
-        ctypes.c_size_t(hdc_mem), 0, 0, width, height,
-        ctypes.c_size_t(hdc_screen), left, top, SRCCOPY
-    )
-
-    bmi = BITMAPINFOHEADER()
-    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-    bmi.biWidth = width
-    bmi.biHeight = -height
-    bmi.biPlanes = 1
-    bmi.biBitCount = 32
-    bmi.biCompression = 0
-
-    buf_size = width * height * 4
-    buf = ctypes.create_string_buffer(buf_size)
-    gdi32.GetDIBits(
-        ctypes.c_size_t(hdc_mem), ctypes.c_size_t(hbmp),
-        0, height, buf, ctypes.byref(bmi), 0
-    )
-
-    gdi32.SelectObject(ctypes.c_size_t(hdc_mem), ctypes.c_size_t(old_obj))
-    gdi32.DeleteObject(ctypes.c_size_t(hbmp))
-    gdi32.DeleteDC(ctypes.c_size_t(hdc_mem))
-    user32.ReleaseDC(0, hdc_screen)
-
-    _write_png(save_path, width, height, buf.raw)
+    width, height, bgra_raw = _grab_window_bgra_fast(hwnd)
+    _write_png(save_path, width, height, bgra_raw)
     return {
         "screenshot_path": str(save_path),
         "window_rect": {"left": left, "top": top, "right": right, "bottom": bottom, "width": width, "height": height},
@@ -324,23 +302,26 @@ def click_screen_coords(
 
 
 def send_key_shortcut(vk_code: int, ctrl: bool = False, shift: bool = False) -> None:
-    """Send a native Win32 keyboard shortcut to the focused Bambu Studio window."""
+    """Send a native Win32 keyboard shortcut with hardware scan code so wxWidgets EVT_CHAR receives it."""
     VK_CONTROL = 0x11
     VK_SHIFT = 0x10
     KEYEVENTF_KEYUP = 0x0002
+    scan_code = user32.MapVirtualKeyW(vk_code, 0)
+    ctrl_scan = user32.MapVirtualKeyW(VK_CONTROL, 0)
+    shift_scan = user32.MapVirtualKeyW(VK_SHIFT, 0)
     if ctrl:
-        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(VK_CONTROL, ctrl_scan, 0, 0)
     if shift:
-        user32.keybd_event(VK_SHIFT, 0, 0, 0)
+        user32.keybd_event(VK_SHIFT, shift_scan, 0, 0)
     time.sleep(0.01)
-    user32.keybd_event(vk_code, 0, 0, 0)
+    user32.keybd_event(vk_code, scan_code, 0, 0)
     time.sleep(0.03)
-    user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(vk_code, scan_code, KEYEVENTF_KEYUP, 0)
     time.sleep(0.01)
     if shift:
-        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_KEYUP, 0)
     if ctrl:
-        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, ctrl_scan, KEYEVENTF_KEYUP, 0)
     time.sleep(0.06)
 
 
@@ -551,13 +532,83 @@ def control_bambu_gui(
             if after_scan.get("active_selected_plate") == plate_num:
                 break
 
-    elif act in ("sidebar_objects", "sidebar_global"):
-        rx = 185 if act == "sidebar_objects" else 132
-        ry = 497
-        sx = main_win["rect"]["left"] + rx
-        sy = main_win["rect"]["top"] + ry
-        click_screen_coords(sx, sy)
-        clicked_at = {"screen_x": sx, "screen_y": sy, "rel_x": rx, "rel_y": ry}
+    elif act == "slice_all":
+        # Check if the 'Slice all / Slice plate' green dropdown is already open at (755, 84)
+        stride = win_w * 4
+        idx_menu = 84 * stride + 755 * 4
+        b_m, g_m, r_m = bgra_before[idx_menu], bgra_before[idx_menu + 1], bgra_before[idx_menu + 2]
+        if not (g_m > 130 and r_m < 50):
+            # Open the chevron at (696, 55)
+            click_screen_coords(main_win["rect"]["left"] + 696, main_win["rect"]["top"] + 55)
+            time.sleep(0.25)
+        # Click 'Slice all' at (755, 84)
+        click_screen_coords(main_win["rect"]["left"] + 755, main_win["rect"]["top"] + 84)
+        time.sleep(0.30)
+        # Click the main 'Slice all' button at (755, 55) to trigger slicing if not already triggered
+        click_screen_coords(main_win["rect"]["left"] + 755, main_win["rect"]["top"] + 55)
+        time.sleep(2.5)
+        clicked_at = {"chevron": (696, 55), "slice_all_menu_item": (755, 84), "slice_button": (755, 55)}
+
+    elif act == "plate6_filament2":
+        # 1. Undo the 50-object filament change so Plates 1-5 return to their original colors
+        click_screen_coords(main_win["rect"]["left"] + 207, main_win["rect"]["top"] + 18)
+        time.sleep(0.25)
+
+        # 2. Press ESC (0x1B) on the canvas to clear the 50-object selection
+        click_screen_coords(main_win["rect"]["left"] + 550, main_win["rect"]["top"] + 600)
+        send_key_shortcut(0x1B, ctrl=False)
+        time.sleep(0.15)
+
+        # 3. Click ONLY the object on Plate 06 (669, 678)
+        obj_x, obj_y = 669, 678
+        click_screen_coords(main_win["rect"]["left"] + obj_x, main_win["rect"]["top"] + obj_y)
+        time.sleep(0.20)
+
+        # 4. Press '2' (0x32 with hardware scan code) so ONLY Plate 06's object becomes Filament #2
+        send_key_shortcut(0x32, ctrl=False)
+        time.sleep(0.25)
+
+        # 5. Click the dropdown arrow on 'Slice plate' (rel_x=714, rel_y=56) to open the 'Slice all' menu
+        click_screen_coords(main_win["rect"]["left"] + 714, main_win["rect"]["top"] + 56)
+        time.sleep(0.20)
+
+        clicked_at = {
+            "clicked_object_rel_xy": (obj_x, obj_y),
+            "sent_keys": ["Undo", "Esc", "Click(669,678)", "2", "ClickSliceDropdown(714,56)"],
+        }
+
+    elif act == "sidebar_objects":
+        all_children = list_child_windows(hwnd)
+        dv = next((c for c in all_children if c["title"] == "wxdataviewctrlmainwindow"), None)
+        glc = next((c for c in all_children if "glcanvas" in c["class_name"].lower()), None)
+        if dv:
+            rx = dv["rect"]["left"] + 80
+            ry = dv["rect"]["top"] + 33
+            # Left-click Plate 2 first (dismisses any open menu), then Right-click Plate 2
+            click_screen_coords(rx, ry)
+            time.sleep(0.08)
+            user32.mouse_event(0x0008, 0, 0, 0, 0)
+            time.sleep(0.04)
+            user32.mouse_event(0x0010, 0, 0, 0, 0)
+            time.sleep(0.20)
+            # Click 'Select All' (first item in context menu at rx + 35, ry + 15)
+            click_screen_coords(rx + 35, ry + 15)
+            time.sleep(0.20)
+            # Give keyboard focus to GLCanvas via AttachThreadInput without clicking GLCanvas (preserving selection!)
+            if glc:
+                target_tid = user32.GetWindowThreadProcessId(hwnd, None)
+                cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+                user32.AttachThreadInput(target_tid, cur_tid, True)
+                user32.SetFocus(ctypes.c_size_t(glc["hwnd"]))
+                user32.AttachThreadInput(target_tid, cur_tid, False)
+                move_cursor_exact(glc["rect"]["left"] + 200, glc["rect"]["top"] + 200)
+                user32.mouse_event(0x0001, 1, 0, 0, 0)
+                time.sleep(0.08)
+            send_key_shortcut(0x34, ctrl=False)
+            time.sleep(0.25)
+            clicked_at = {"dataview_rect": dv["rect"], "glc": glc["rect"] if glc else None}
+        else:
+            clicked_at = {"error": "wxdataviewctrlmainwindow not found"}
 
     elif act in (
         "view_iso", "view_bottom", "view_top", "view_front", "view_back", "view_left", "view_right",
@@ -635,7 +686,7 @@ def control_bambu_gui(
     visual_changed = bgra_before != bgra_after
 
     shot_info = None
-    if act == "inspect" or screenshot_path:
+    if act in ("inspect", "sidebar_objects", "plate6_filament2", "slice_all") or act.startswith("select_plate_") or screenshot_path:
         out_png = (
             Path(screenshot_path)
             if screenshot_path
@@ -654,5 +705,5 @@ def control_bambu_gui(
     }
     if act == "inspect":
         res["child_window_count"] = len(children)
-        res["children_sample"] = children[:25]
+        res["children_sample"] = children[:100]
     return res
